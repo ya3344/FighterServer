@@ -163,6 +163,7 @@
     <ClInclude Include="..\Common\PacketBuffer\PacketBuffer.h" />
     <ClInclude Include="..\Common\RingBuffer\RingBuffer.h" />
     <ClInclude Include="Constant.h" />
+    <ClInclude Include="define.h" />
     <ClInclude Include="Macro.h" />
     <ClInclude Include="pch.h" />
     <ClInclude Include="Protocol.h" />

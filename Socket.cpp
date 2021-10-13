@@ -7,7 +7,8 @@ Socket::~Socket()
 {
 	closesocket(mListenSock);
 	WSACleanup();
-	SafeDelete(mPacketBuffer);
+	mHeaderNameData.clear();
+	Release();
 }
 
 bool Socket::Initialize()
@@ -63,10 +64,11 @@ bool Socket::Initialize()
 		return false;
 	}
 
+	HeaderNameInsert();
 	// packetBuffer 할당
-	mPacketBuffer = new PacketBuffer;
+	/*mPacketBuffer = new PacketBuffer;
 	_ASSERT(mPacketBuffer != nullptr);
-	mPacketBuffer->Initialize();
+	mPacketBuffer->Initialize();*/
 
 	return true;
 }
@@ -127,9 +129,74 @@ bool Socket::ServerProcess()
 		}
 		// 64개 미만인 select 실행
 		SelectSocket(read_set, write_set, sessionID_Data);
+
+		// Update 처리
+		Update();
 	}
 
 	return false;
+}
+
+void Socket::Update()
+{
+	mCurTime = timeGetTime();
+
+	if (mIsFlag)
+	{
+		mOldTime = mCurTime - (mDeltaTime - (20 - (mCurTime - mSkiptime)));
+		mIsFlag = false;
+	}
+
+	mDeltaTime = mCurTime - mOldTime;
+
+	if (mDeltaTime < 40)
+	{
+		if (mDeltaTime < 20)
+		{
+			Sleep(20 - mDeltaTime);
+		}
+		//20ms를 초과 X -> Sleep 한 시간만큼 old에 더한다. 
+		//20ms를 초과 O -> 초과한 시간만큼 old에서 뺀다. (그냥 누적하다가 1프레임이 넘으면 스킵) old = cur - (deltaTime - 20);
+		mOldTime = mCurTime - (mDeltaTime - 20);
+		CharacterUpdate();
+		++mFps;
+	}
+	else
+	{
+		mIsFlag = true;
+		mSkiptime = mCurTime;
+	}
+
+	if (mFpsTime + 1000 < timeGetTime())
+	{
+		//wprintf(L"fps:%d\n", mFps);
+		mFpsTime = timeGetTime();
+		mFps = 0;
+	}
+}
+
+void Socket::Release()
+{
+	ClientInfo* clientInfo = nullptr;
+	SessionInfo* sessionInfo = nullptr;
+
+	for (auto iterClientData : mClientData)
+	{
+		clientInfo = iterClientData.second;
+		SafeDelete(clientInfo);
+	}
+	mClientData.clear();
+
+	for (auto iterSessionData : mSessionData)
+	{
+		sessionInfo = iterSessionData.second;
+		SafeDelete(sessionInfo->sendRingBuffer);
+		SafeDelete(sessionInfo->recvRingBuffer);
+		closesocket(sessionInfo->clientSock);
+		SafeDelete(sessionInfo);
+	}
+	mSessionData.clear();
+
 }
 
 void Socket::SelectSocket(fd_set& read_set, fd_set& write_set, const vector<DWORD>& sessionID_Data)
@@ -189,14 +256,14 @@ void Socket::SelectSocket(fd_set& read_set, fd_set& write_set, const vector<DWOR
 		{
 			if (returnVal = recv(sessionInfo->clientSock, sessionInfo->recvRingBuffer->GetBufferPtr(), sessionInfo->recvRingBuffer->GetFreeSize(), 0))
 			{
-				CONSOLE_LOG(LOG_LEVEL_DEBUG, L"recv packet size:%d", returnVal);
+				CONSOLE_LOG(LOG_LEVEL_DEBUG, L"sessionID:%d recv packet size:%d", sessionInfo->sessionID, returnVal);
 
 				if (returnVal == SOCKET_ERROR)
 				{
 					// 강제 연결 접속 종료
 					if (WSAGetLastError() == WSAECONNRESET)
 					{
-						RemoveSessionInfo(sessionInfo);
+						RemoveSessionInfo(sessionInfo->sessionID);
 						continue;
 					}
 					if (WSAGetLastError() != WSAEWOULDBLOCK)
@@ -217,7 +284,7 @@ void Socket::SelectSocket(fd_set& read_set, fd_set& write_set, const vector<DWOR
 			}
 			else
 			{
-				RemoveSessionInfo(sessionInfo);
+				RemoveSessionInfo(sessionInfo->sessionID);
 			}
 		}
 		if (FD_ISSET(sessionInfo->clientSock, &write_set))
@@ -246,8 +313,8 @@ void Socket::SendProcess(const SessionInfo* sessionInfo)
 	retSize = sessionInfo->sendRingBuffer->Peek(outputData, sessionInfo->sendRingBuffer->GetUseSize());
 
 	retVal = send(sessionInfo->clientSock, outputData, retSize, 0);
-	CONSOLE_LOG(LOG_LEVEL_DEBUG, L"send packet size:%d sendRingBuffer useSize:%d", 
-		retVal, sessionInfo->sendRingBuffer->GetUseSize());
+	CONSOLE_LOG(LOG_LEVEL_DEBUG, L"sessionID:%d send packet size:%d sendRingBuffer useSize:%d ", 
+		sessionInfo->sessionID, retVal, sessionInfo->sendRingBuffer->GetUseSize() );
 
 	if (retVal == SOCKET_ERROR)
 	{
@@ -276,6 +343,7 @@ void Socket::RecvProcess(SessionInfo* sessionInfo)
 	WORD length = 0;
 	DWORD returnVal = 0;
 	HeaderInfo header;
+	PacketBuffer packetBuffer(PacketBuffer::BUFFER_SIZE_DEFAULT);
 
 	while (sessionInfo->recvRingBuffer->GetUseSize() >= sizeof(header))
 	{
@@ -297,6 +365,7 @@ void Socket::RecvProcess(SessionInfo* sessionInfo)
 		//헤더와 페이로드 사이즈가 합친 사이즈보다 적으면 다음 수행을 할 수 없다. 다음에 처리 진행
 		if (header.payLoadSize + sizeof(header) > sessionInfo->recvRingBuffer->GetUseSize())
 		{
+			CONSOLE_LOG(LOG_LEVEL_DEBUG, L"payloadSize error![payLoadSize:%d]", header.payLoadSize);
 			return;
 		}
 
@@ -307,8 +376,8 @@ void Socket::RecvProcess(SessionInfo* sessionInfo)
 		sessionInfo->recvRingBuffer->MoveReadPos(returnVal);
 
 		// 패킷버퍼에 payload 입력
-		mPacketBuffer->Clear();
-		returnVal = sessionInfo->recvRingBuffer->Peek(mPacketBuffer->GetBufferPtr(), header.payLoadSize);
+		packetBuffer.Clear();
+		returnVal = sessionInfo->recvRingBuffer->Peek(packetBuffer.GetBufferPtr(), header.payLoadSize);
 
 		if (returnVal != header.payLoadSize)
 		{
@@ -317,29 +386,33 @@ void Socket::RecvProcess(SessionInfo* sessionInfo)
 			return;
 		}
 		// 패킷 버퍼도 버퍼에 직접담은 부분이기 때문에 writepos을 직접 이동시켜준다.
-		mPacketBuffer->MoveWritePos(returnVal);
+		packetBuffer.MoveWritePos(returnVal);
 
 		CONSOLE_LOG(LOG_LEVEL_DEBUG, L"payLoadSize:%d RingBuf useSize:%d", 
 			returnVal, sessionInfo->recvRingBuffer->GetUseSize());
 
 		sessionInfo->recvRingBuffer->MoveReadPos(returnVal);
 
-		PacketProcess(header.msgType, sessionInfo);
+		PacketProcess(header.msgType, sessionInfo, packetBuffer);
 	}
 }
 
-void Socket::PacketProcess(const WORD msgType, SessionInfo* clientInfo)
+void Socket::PacketProcess(const WORD msgType, const SessionInfo* sessionInfo, PacketBuffer& packetBuffer)
 {
+	BYTE direction = 0;
+	short x = 0;
+	short y = 0;
+
 	switch (msgType)
 	{
 	case HEADER_CS_MOVE_START:
 		{
-			
+			MoveStartRequest(sessionInfo, packetBuffer);
 		}
 		break;
 	case HEADER_CS_MOVE_STOP:
 		{
-			
+			MoveStopRequest(sessionInfo, packetBuffer);
 		}
 		break;
 	case HEADER_CS_ATTACK1:
@@ -364,6 +437,404 @@ void Socket::PacketProcess(const WORD msgType, SessionInfo* clientInfo)
 
 }
 
+void Socket::SendUnicast(const SessionInfo* sessionInfo, const HeaderInfo* header, const PacketBuffer& packetBuffer)
+{
+	sessionInfo->sendRingBuffer->Enqueue((char*)header, sizeof(HeaderInfo));
+	sessionInfo->sendRingBuffer->Enqueue(packetBuffer.GetBufferPtr(), packetBuffer.GetDataSize());
+
+	CONSOLE_LOG(LOG_LEVEL_DEBUG, L"Send Header Type:%s RingBuf useSize:%d",
+		mHeaderNameData[header->msgType].c_str(),
+		sessionInfo->sendRingBuffer->GetUseSize());
+}
+
+void Socket::SendBroadcast(const SessionInfo* sessionInfo, const HeaderInfo* header, const PacketBuffer& packetBuffer, const bool isSelf)
+{
+	for (auto iterSessionData : mSessionData)
+	{
+		if (isSelf == false)
+		{
+			if (iterSessionData.second == sessionInfo)
+				continue;
+		}
+		SendUnicast(iterSessionData.second, header, packetBuffer);
+	}
+}
+
+void Socket::MoveStartRequest(const SessionInfo* sessionInfo, PacketBuffer& packetBuffer)
+{
+	BYTE direction;
+	short x;
+	short y;
+	ClientInfo* clientInfo = nullptr;
+
+	packetBuffer >> direction;
+	packetBuffer >> x;
+	packetBuffer >> y;
+
+	clientInfo = FindClientInfo(sessionInfo->sessionID);
+	if (clientInfo == nullptr)
+	{
+		CONSOLE_LOG(LOG_LEVEL_ERROR, L"ClientData Find Error[ID:%d]",
+			sessionInfo->sessionID);
+		_ASSERT(false);
+		return;
+	}
+	
+	CONSOLE_LOG(LOG_LEVEL_DEBUG, L"MoveStart SessionID:%d / dir:%d / x: %d / y:%d",
+		sessionInfo->sessionID, direction, x, y);
+
+	// 클라이언트와 서버의 캐릭터 좌표 차이가 범위 이상이면 에러 처리진행.
+	if (abs(x - clientInfo->x) >= ERROR_RANGE || abs(y - clientInfo->y) >= ERROR_RANGE)
+	{
+		CONSOLE_LOG(LOG_LEVEL_DEBUG, L"ERROR_RANGE SessionID:%d / server_x: %d / server_y:%d / client_x: %d / client_y: %d",
+			sessionInfo->sessionID, clientInfo->x, clientInfo->y, x, y);
+		x = clientInfo->x;
+		y = clientInfo->y;
+		_ASSERT(false);
+	}
+
+	clientInfo->action = direction;			// 동작 변경
+	clientInfo->moveDirection = direction;	// 8방향 적용
+	switch (direction)
+	{
+	case ACTION_MOVE_RR:
+	case ACTION_MOVE_RU:
+	case ACTION_MOVE_RD:
+		{
+			clientInfo->direction = HEADER_MOVE_DIR_RR;
+		}
+		break;
+	case ACTION_MOVE_LL:
+	case ACTION_MOVE_LU:
+	case ACTION_MOVE_LD:
+		{
+			clientInfo->direction = HEADER_MOVE_DIR_LL;
+		}
+		break;
+	case ACTION_MOVE_UU:
+	case ACTION_MOVE_DD:
+		break;
+	default:
+		{
+			CONSOLE_LOG(LOG_LEVEL_DEBUG, L"unknown direction:%d", direction);
+		}
+		return;
+	}
+	clientInfo->isMove = true;
+	MoveStartMakePacket(clientInfo, packetBuffer);
+}
+
+void Socket::MoveStartMakePacket(const ClientInfo* clientInfo, PacketBuffer& packetBuffer)
+{
+	HeaderInfo header;
+
+	packetBuffer.Clear();
+	packetBuffer << clientInfo->sessionInfo->sessionID;
+	packetBuffer << clientInfo->moveDirection;
+	packetBuffer << clientInfo->x;
+	packetBuffer << clientInfo->y;
+
+	header.code = PACKET_CODE;
+	header.msgType = HEADER_SC_MOVE_START;
+	header.payLoadSize = packetBuffer.GetDataSize();
+
+	SendBroadcast(clientInfo->sessionInfo, &header, packetBuffer);
+}
+
+void Socket::MoveStopRequest(const SessionInfo* sessionInfo, PacketBuffer& packetBuffer)
+{
+	BYTE direction;
+	short x;
+	short y;
+	ClientInfo* clientInfo = nullptr;
+
+	packetBuffer >> direction;
+	packetBuffer >> x;
+	packetBuffer >> y;
+
+	clientInfo = FindClientInfo(sessionInfo->sessionID);
+	if (clientInfo == nullptr)
+	{
+		CONSOLE_LOG(LOG_LEVEL_ERROR, L"ClientData Find Error[ID:%d]",
+			sessionInfo->sessionID);
+		return;
+	}
+
+	CONSOLE_LOG(LOG_LEVEL_DEBUG, L"MoveStop SessionID:%d / dir:%d / x: %d / y:%d",
+		sessionInfo->sessionID, direction, x, y);
+
+	// 클라이언트와 서버의 캐릭터 좌표 차이가 범위 이상이면 에러 처리진행.
+	if (abs(x - clientInfo->x) >= ERROR_RANGE || abs(y - clientInfo->y) >= ERROR_RANGE)
+	{
+		CONSOLE_LOG(LOG_LEVEL_DEBUG, L"ERROR_RANGE SessionID:%d / server_x: %d / server_y:%d / client_x: %d / client_y: %d",
+			sessionInfo->sessionID, clientInfo->x, clientInfo->y, x, y);
+		x = clientInfo->x;
+		y = clientInfo->y;
+		_ASSERT(false);
+	}
+
+	if (clientInfo->direction != direction)
+	{
+		CONSOLE_LOG(LOG_LEVEL_DEBUG, L"direction uncorrect! SessionID:%d / server_dir: %d / client_dir:%d",
+			sessionInfo->sessionID, clientInfo->direction, direction);
+		_ASSERT(false);
+		direction = clientInfo->direction;
+	}
+	
+	clientInfo->isMove = false;
+	MoveStopMakePacket(clientInfo, packetBuffer);
+}
+
+void Socket::MoveStopMakePacket(const ClientInfo* clientInfo, PacketBuffer& packetBuffer)
+{
+	HeaderInfo header;
+
+	packetBuffer.Clear();
+	packetBuffer << clientInfo->sessionInfo->sessionID;
+	packetBuffer << clientInfo->direction;
+	packetBuffer << clientInfo->x;
+	packetBuffer << clientInfo->y;
+
+	header.code = PACKET_CODE;
+	header.msgType = HEADER_SC_MOVE_STOP;
+	header.payLoadSize = packetBuffer.GetDataSize();
+
+	SendBroadcast(clientInfo->sessionInfo, &header, packetBuffer);
+}
+
+void Socket::CreateCharacter_MakePacket(const ClientInfo* clientInfo)
+{
+	HeaderInfo header;
+	PacketBuffer packetBuffer(PacketBuffer::BUFFER_SIZE_DEFAULT);
+
+	packetBuffer << clientInfo->sessionInfo->sessionID;
+	packetBuffer << clientInfo->direction;
+	packetBuffer << clientInfo->x;
+	packetBuffer << clientInfo->y;
+	packetBuffer << clientInfo->hp;
+
+	header.code = PACKET_CODE;
+	header.msgType = HEADER_SC_CREATE_MY_CHARACTER;
+	header.payLoadSize = packetBuffer.GetDataSize();
+
+	SendUnicast(clientInfo->sessionInfo, &header, packetBuffer);
+}
+
+void Socket::CreateCharacterOther_MakePacket(const SessionInfo* sessionInfo)
+{
+	HeaderInfo header;
+	PacketBuffer packetBuffer(PacketBuffer::BUFFER_SIZE_DEFAULT);
+	ClientInfo* clientInfo = nullptr;
+
+	for (auto iterClietData : mClientData)
+	{
+		clientInfo = iterClietData.second;
+
+		packetBuffer.Clear();
+		packetBuffer << clientInfo->sessionInfo->sessionID;
+		packetBuffer << clientInfo->direction;
+		packetBuffer << clientInfo->x;
+		packetBuffer << clientInfo->y;
+		packetBuffer << clientInfo->hp;
+
+		header.code = PACKET_CODE;
+		header.msgType = HEADER_SC_CREATE_OTHER_CHARACTER;
+		header.payLoadSize = packetBuffer.GetDataSize();
+
+		if (sessionInfo->sessionID == clientInfo->sessionInfo->sessionID)
+		{
+			SendBroadcast(clientInfo->sessionInfo, &header, packetBuffer);
+		}
+		else
+		{
+			SendUnicast(sessionInfo, &header, packetBuffer);
+		}
+	}
+
+
+	
+}
+
+void Socket::RemoveCharacter_MakePacket(const ClientInfo* clientInfo)
+{
+	HeaderInfo header;
+	PacketBuffer packetBuffer(PacketBuffer::BUFFER_SIZE_DEFAULT);
+
+	packetBuffer << clientInfo->sessionInfo->sessionID;
+
+	header.code = PACKET_CODE;
+	header.msgType = HEADER_SC_DELETE_CHARACTER;
+	header.payLoadSize = packetBuffer.GetDataSize();
+
+	SendBroadcast(clientInfo->sessionInfo, &header, packetBuffer, true);
+}
+
+void Socket::CharacterUpdate()
+{
+	ClientInfo* clientInfo = nullptr;
+
+	for (auto iterClientData : mClientData)
+	{
+		clientInfo = iterClientData.second;
+		ActionProc(clientInfo);
+	}
+}
+
+void Socket::ActionProc(ClientInfo* clientInfo)
+{
+	// 캐릭터 이동 관련
+	bool isMove = false;
+	short curX = clientInfo->x;
+	short curY = clientInfo->y;
+
+	if (clientInfo->isMove == false)
+		return;
+
+	switch (clientInfo->action)
+	{
+	case ACTION_MOVE_LL:
+		{
+			isMove = MoveCurX(&curX, true);
+
+			if (isMove == true)
+				clientInfo->x = curX;
+		}
+		break;
+	case ACTION_MOVE_LU:
+		{
+			// X, Y좌표이동이 가능해야 패킷 전송 및 움직임 진행
+			if (true == MoveCurX(&curX, true) && true == MoveCurY(&curY, true))
+			{
+				isMove = true;
+				clientInfo->x = curX;
+				clientInfo->y = curY;
+			}
+			else
+			{
+				isMove = false;
+			}
+		}
+		break;
+	case ACTION_MOVE_LD:
+		{
+			// X, Y좌표이동이 가능해야 패킷 전송 및 움직임 진행
+			if (true == MoveCurX(&curX, true) && true == MoveCurY(&curY, false))
+			{
+				isMove = true;
+				clientInfo->x = curX;
+				clientInfo->y = curY;
+			}
+			else
+			{
+				isMove = false;
+			}
+		}
+		break;
+	case ACTION_MOVE_UU:
+		{
+			isMove = MoveCurY(&curY, true);
+
+			if (isMove == true)
+				clientInfo->y = curY;
+		}
+		break;
+	case ACTION_MOVE_RU:
+		{
+			// X, Y좌표이동이 가능해야 패킷 전송 및 움직임 진행
+			if (true == MoveCurX(&curX, false) && true == MoveCurY(&curY, true))
+			{
+				isMove = true;
+				clientInfo->x = curX;
+				clientInfo->y = curY;
+			}
+			else
+			{
+				isMove = false;
+			}
+		}
+		break;
+	case ACTION_MOVE_RR:
+		{
+			isMove = MoveCurX(&curX, false);
+
+			if (isMove == true)
+				clientInfo->x = curX;
+		}
+		break;
+	case ACTION_MOVE_RD:
+		{
+
+			// X, Y좌표이동이 가능해야 패킷 전송 및 움직임 진행
+			if (true == MoveCurX(&curX, false) && true == MoveCurY(&curY, false))
+			{
+				isMove = true;
+				clientInfo->x = curX;
+				clientInfo->y = curY;
+			}
+			else
+			{
+				isMove = false;
+			}
+		}
+		break;
+	case ACTION_MOVE_DD:
+		{
+			isMove = MoveCurY(&curY, false);
+
+			if (isMove == true)
+				clientInfo->y = curY;
+		}
+		break;
+	default:
+		return;
+	}
+
+	CONSOLE_LOG(LOG_LEVEL_DEBUG, L"Move SessionID:%d server_x:%d server_y:%d",
+		clientInfo->sessionInfo->sessionID, clientInfo->x, clientInfo->y);
+}
+
+bool Socket::MoveCurX(short* outCurX, const bool isLeft)
+{
+	if (isLeft == true)
+		*outCurX -= MOVE_X_PIXEL;
+	else
+		*outCurX += MOVE_X_PIXEL;
+
+	if (*outCurX <= RANGE_MOVE_LEFT + MOVE_X_PIXEL)
+	{
+		*outCurX = RANGE_MOVE_LEFT + MOVE_X_PIXEL;
+		return false;
+	}
+	else if (*outCurX >= RANGE_MOVE_RIGHT - MOVE_X_PIXEL)
+	{
+		*outCurX = RANGE_MOVE_RIGHT - MOVE_X_PIXEL;
+		return false;
+	}
+
+	return true;
+}
+
+bool Socket::MoveCurY(short* outCurY, const bool isUp)
+{
+	if (isUp == true)
+		*outCurY -= MOVE_Y_PIXEL;
+	else
+		*outCurY += MOVE_Y_PIXEL;
+
+	if (*outCurY < RANGE_MOVE_TOP + MOVE_Y_PIXEL)
+	{
+		*outCurY = RANGE_MOVE_TOP + MOVE_Y_PIXEL;
+		return false;
+	}
+	else if (*outCurY > RANGE_MOVE_BOTTOM - MOVE_Y_PIXEL)
+	{
+		*outCurY = RANGE_MOVE_BOTTOM - MOVE_Y_PIXEL;
+		return false;
+	}
+
+	return true;
+}
+
 void Socket::AddSessionInfo(const SOCKET clientSock, SOCKADDR_IN& clientAddr)
 {
 	WCHAR clientIP[IP_BUFFER_SIZE] = { 0, };
@@ -384,24 +855,37 @@ void Socket::AddSessionInfo(const SOCKET clientSock, SOCKADDR_IN& clientAddr)
 	sessionInfo->sendRingBuffer = new RingBuffer;
 
 	mSessionData.emplace(sessionInfo->sessionID, sessionInfo);
+	AddClientInfo(sessionInfo);
 }
 
-void Socket::RemoveSessionInfo(SessionInfo* sessionInfo)
+void Socket::RemoveSessionInfo(const DWORD sessionID)
 {
-	closesocket(sessionInfo->clientSock);
-	SafeDelete(sessionInfo->recvRingBuffer);
-	SafeDelete(sessionInfo->sendRingBuffer);
-	SafeDelete(sessionInfo);
-	--mSession_IDNum;
-
 	// 유저 데이터 삭제
-	auto sessionData = mSessionData.find(sessionInfo->sessionID);
-	if (sessionData == mSessionData.end())
+	auto iterClientData = mClientData.find(sessionID);
+	if (iterClientData == mClientData.end())
 	{
-		CONSOLE_LOG(LOG_LEVEL_ERROR, L"RemoveClientInfo userData find error!");
+		CONSOLE_LOG(LOG_LEVEL_ERROR, L"RemoveClientInfo clientData find error![sessionID:%d]", sessionID);
 		return;
 	}
-	mSessionData.erase(sessionData);
+	// 다른 유저들과 나에게 캐릭터 삭제 패킷 전송
+	RemoveCharacter_MakePacket(iterClientData->second);
+
+	SafeDelete(iterClientData->second);
+	mClientData.erase(iterClientData);
+
+	// 세션 데이터 삭제
+	auto iterSessionData = mSessionData.find(sessionID);
+	if (iterSessionData == mSessionData.end())
+	{
+		CONSOLE_LOG(LOG_LEVEL_ERROR, L"RemoveClientInfo session find error![sessionID:%d]", sessionID);
+		return;
+	}
+	closesocket(iterSessionData->second->clientSock);
+	SafeDelete(iterSessionData->second->recvRingBuffer);
+	SafeDelete(iterSessionData->second->sendRingBuffer);
+	SafeDelete(iterSessionData->second);
+	--mSession_IDNum;
+	mSessionData.erase(iterSessionData);
 }
 
 void Socket::HeaderNameInsert()
@@ -411,4 +895,39 @@ void Socket::HeaderNameInsert()
 	mHeaderNameData.emplace(20, L"HEADER_CS_ATTACK1");
 	mHeaderNameData.emplace(22, L"HEADER_CS_ATTACK2");
 	mHeaderNameData.emplace(24, L"HEADER_CS_ATTACK3");
+	mHeaderNameData.emplace(0, L"HEADER_SC_CREATE_MY_CHARACTER");
+	mHeaderNameData.emplace(1, L"HEADER_SC_CREATE_OTHER_CHARACTER");
+	mHeaderNameData.emplace(2, L"HEADER_SC_DELETE_CHARACTER");
+	mHeaderNameData.emplace(11, L"HEADER_SC_MOVE_START");
+	mHeaderNameData.emplace(13, L"HEADER_SC_MOVE_STOP");
+}
+
+void Socket::AddClientInfo(SessionInfo* sessionInfo)
+{
+	ClientInfo* clientInfo = nullptr;
+	clientInfo = new ClientInfo;
+	_ASSERT(clientInfo != nullptr);
+
+	clientInfo->hp = 100;
+	clientInfo->sessionInfo = sessionInfo;
+	clientInfo->x = 50;
+	clientInfo->y = 40;
+	mClientData.emplace(sessionInfo->sessionID, clientInfo);
+	CreateCharacter_MakePacket(clientInfo);
+	CreateCharacterOther_MakePacket(clientInfo->sessionInfo);
+}
+
+Socket::ClientInfo* Socket::FindClientInfo(const DWORD sessionID)
+{
+	ClientInfo* clientInfo = nullptr;
+
+	auto clientIter = mClientData.find(sessionID);
+	if (clientIter == mClientData.end())
+	{
+		return nullptr;
+	}
+
+	clientInfo = clientIter->second;
+
+	return clientInfo;
 }

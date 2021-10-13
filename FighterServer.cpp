@@ -18,6 +18,6 @@ int main()
     if (gSocket.ServerProcess() == false)
         return EXIT_FAILURE;
 
-
+    timeEndPeriod(1);
     return EXIT_SUCCESS;
 }

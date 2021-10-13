@@ -34,6 +34,7 @@ using namespace std;
 
 #include "Constant.h"
 #include "Macro.h"
+#include "define.h"
 
 #ifdef _DEBUG
 #define new new( _NORMAL_BLOCK, __FILE__, __LINE__ )                                            

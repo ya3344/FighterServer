@@ -5,9 +5,9 @@ static constexpr BYTE PACKET_CODE = 0x89;
 #pragma pack(push, 1)   
 struct HeaderInfo
 {
-	BYTE code = PACKET_CODE;
-	WORD msgType = 0;
-	WORD payLoadSize = 0;
+	BYTE code = 0;
+	BYTE payLoadSize = 0;
+	BYTE msgType = 0;
 };
 #pragma pack(pop)
 
