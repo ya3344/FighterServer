@@ -18,6 +18,15 @@ inline void SafeFree(T& obj)
 		obj = nullptr;
 	}
 }
+
+inline short CalDistance(const short srcX, const short srcY, const short destX, const short destY)
+{
+	short x = destX - srcX;
+	short y = destY - srcY;
+	short distance = (short)(sqrt((x * x) + (y * y)));
+
+	return distance;
+}
 	
 // Log 
 enum LOG_INDEX

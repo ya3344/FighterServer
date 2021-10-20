@@ -16,7 +16,8 @@ bool Socket::Initialize()
 	WSADATA wsaData;
 	SOCKADDR_IN serveraddr;
 	WCHAR serverIP[IP_BUFFER_SIZE] = { 0, };
-	int returnValue = 0;
+	LINGER optval;
+	int returnValue;
 
 	if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0)
 	{
@@ -30,6 +31,11 @@ bool Socket::Initialize()
 		CONSOLE_LOG(LOG_LEVEL_ERROR, L"listen_sock error:%d", WSAGetLastError());
 		return false;
 	}
+
+	// timewait 남기지 않도록 설정
+	optval.l_onoff = 1;
+	optval.l_linger = 0;
+	setsockopt(mListenSock, SOL_SOCKET, SO_LINGER, (char*)&optval, sizeof(optval));
 
 	// bind
 	ZeroMemory(&serveraddr, sizeof(serveraddr));
@@ -64,11 +70,12 @@ bool Socket::Initialize()
 		return false;
 	}
 
+	// 디버그용 헤더타입 이름 저장
 	HeaderNameInsert();
-	// packetBuffer 할당
-	/*mPacketBuffer = new PacketBuffer;
-	_ASSERT(mPacketBuffer != nullptr);
-	mPacketBuffer->Initialize();*/
+	
+	// 섹터 단위 지정
+	mSectorRange.x = RANGE_MOVE_RIGHT / SECTOR_MAX_X;
+	mSectorRange.y = RANGE_MOVE_BOTTOM / SECTOR_MAX_Y;
 
 	return true;
 }
@@ -266,6 +273,12 @@ void Socket::SelectSocket(fd_set& read_set, fd_set& write_set, const vector<DWOR
 						RemoveSessionInfo(sessionInfo->sessionID);
 						continue;
 					}
+					// 잘못된 주소
+					if (WSAGetLastError() == WSAEFAULT)
+					{
+						RemoveSessionInfo(sessionInfo->sessionID);
+						continue;
+					}
 					if (WSAGetLastError() != WSAEWOULDBLOCK)
 					{
 						CONSOLE_LOG(LOG_LEVEL_ERROR, L"recv ERROR errcode[%d]", WSAGetLastError());
@@ -369,7 +382,8 @@ void Socket::RecvProcess(SessionInfo* sessionInfo)
 			return;
 		}
 
-		CONSOLE_LOG(LOG_LEVEL_DEBUG, L"Header Type:%s RingBuf useSize:%d", 
+		CONSOLE_LOG(LOG_LEVEL_DEBUG, L"[sessionID:%d] Header Type:%s RingBuf useSize:%d", 
+			sessionInfo->sessionID,
 			mHeaderNameData[header.msgType].c_str(),
 			sessionInfo->recvRingBuffer->GetUseSize());
 
@@ -417,17 +431,17 @@ void Socket::PacketProcess(const WORD msgType, const SessionInfo* sessionInfo, P
 		break;
 	case HEADER_CS_ATTACK1:
 		{
-			
+			AttackRequest(sessionInfo, packetBuffer, 1);
 		}
 		break;
 	case HEADER_CS_ATTACK2:
 		{
-			
+			AttackRequest(sessionInfo, packetBuffer, 2);
 		}
 		break;
 	case HEADER_CS_ATTACK3:
 		{
-			
+			AttackRequest(sessionInfo, packetBuffer, 3);
 		}
 		break;
 	default:
@@ -442,7 +456,8 @@ void Socket::SendUnicast(const SessionInfo* sessionInfo, const HeaderInfo* heade
 	sessionInfo->sendRingBuffer->Enqueue((char*)header, sizeof(HeaderInfo));
 	sessionInfo->sendRingBuffer->Enqueue(packetBuffer.GetBufferPtr(), packetBuffer.GetDataSize());
 
-	CONSOLE_LOG(LOG_LEVEL_DEBUG, L"Send Header Type:%s RingBuf useSize:%d",
+	CONSOLE_LOG(LOG_LEVEL_DEBUG, L"[SessionID:%d] Send Header Type:%s RingBuf useSize:%d",
+		sessionInfo->sessionID,
 		mHeaderNameData[header->msgType].c_str(),
 		sessionInfo->sendRingBuffer->GetUseSize());
 }
@@ -460,12 +475,40 @@ void Socket::SendBroadcast(const SessionInfo* sessionInfo, const HeaderInfo* hea
 	}
 }
 
+void Socket::SendSector_Broadcast(const DWORD sessionID, const int sectorX, const int sectorY, const HeaderInfo& header, const PacketBuffer& packetBuffer, const bool isSelf)
+{
+	for (ClientInfo* clientInfo : mSectorData[sectorY][sectorX])
+	{
+		if (isSelf == false)
+		{
+			if (clientInfo->sessionInfo->sessionID == sessionID)
+				continue;
+		}
+		SendUnicast(clientInfo->sessionInfo, &header, packetBuffer);
+	}
+}
+
+void Socket::SendAroundSector_Broadcast(const DWORD sessionID, const int sectorX, const int sectorY, const HeaderInfo& header, const PacketBuffer& packetBuffer, const bool isSelf)
+{
+	SectorAroundInfo mySector;
+
+	GetSectorAround(sectorX, sectorY, &mySector);
+
+	for (int i = 0; i < mySector.count; i++)
+	{
+		SendSector_Broadcast(sessionID,
+			mySector.arround[i].x, mySector.arround[i].y, header, packetBuffer, isSelf);
+	}
+
+}
+
 void Socket::MoveStartRequest(const SessionInfo* sessionInfo, PacketBuffer& packetBuffer)
 {
 	BYTE direction;
 	short x;
 	short y;
 	ClientInfo* clientInfo = nullptr;
+	HeaderInfo header;
 
 	packetBuffer >> direction;
 	packetBuffer >> x;
@@ -490,7 +533,11 @@ void Socket::MoveStartRequest(const SessionInfo* sessionInfo, PacketBuffer& pack
 			sessionInfo->sessionID, clientInfo->x, clientInfo->y, x, y);
 		x = clientInfo->x;
 		y = clientInfo->y;
-		_ASSERT(false);
+		SyncMakePacket(&header, &packetBuffer, clientInfo);
+		SendAroundSector_Broadcast(clientInfo->sessionInfo->sessionID, clientInfo->curSectorPos.x, clientInfo->curSectorPos.y,
+			header, packetBuffer);
+		//return;
+		//_ASSERT(false);
 	}
 
 	clientInfo->action = direction;			// 동작 변경
@@ -501,14 +548,14 @@ void Socket::MoveStartRequest(const SessionInfo* sessionInfo, PacketBuffer& pack
 	case ACTION_MOVE_RU:
 	case ACTION_MOVE_RD:
 		{
-			clientInfo->direction = HEADER_MOVE_DIR_RR;
+			clientInfo->direction = ACTION_MOVE_RR;
 		}
 		break;
 	case ACTION_MOVE_LL:
 	case ACTION_MOVE_LU:
 	case ACTION_MOVE_LD:
 		{
-			clientInfo->direction = HEADER_MOVE_DIR_LL;
+			clientInfo->direction = ACTION_MOVE_LL;
 		}
 		break;
 	case ACTION_MOVE_UU:
@@ -521,24 +568,29 @@ void Socket::MoveStartRequest(const SessionInfo* sessionInfo, PacketBuffer& pack
 		return;
 	}
 	clientInfo->isMove = true;
-	MoveStartMakePacket(clientInfo, packetBuffer);
+
+	//SectorUpdateCharcater(clientInfo, false);
+
+	MoveStartMakePacket(&header, &packetBuffer, clientInfo);
+	SendAroundSector_Broadcast(clientInfo->sessionInfo->sessionID, clientInfo->curSectorPos.x, clientInfo->curSectorPos.y,
+		header, packetBuffer);
+
+	/*SendSector_Broadcast(clientInfo->sessionInfo->sessionID, clientInfo->curSectorPos.x, clientInfo->curSectorPos.y,
+		header, packetBuffer);*/
+	//MoveStartMakePacket(clientInfo, packetBuffer);
 }
 
-void Socket::MoveStartMakePacket(const ClientInfo* clientInfo, PacketBuffer& packetBuffer)
+void Socket::MoveStartMakePacket(HeaderInfo* outHeader, PacketBuffer* outPacketBuffer, const ClientInfo* clientInfo)
 {
-	HeaderInfo header;
+	outPacketBuffer->Clear();
+	*outPacketBuffer << clientInfo->sessionInfo->sessionID;
+	*outPacketBuffer << clientInfo->moveDirection;
+	*outPacketBuffer << clientInfo->x;
+	*outPacketBuffer << clientInfo->y;
 
-	packetBuffer.Clear();
-	packetBuffer << clientInfo->sessionInfo->sessionID;
-	packetBuffer << clientInfo->moveDirection;
-	packetBuffer << clientInfo->x;
-	packetBuffer << clientInfo->y;
-
-	header.code = PACKET_CODE;
-	header.msgType = HEADER_SC_MOVE_START;
-	header.payLoadSize = packetBuffer.GetDataSize();
-
-	SendBroadcast(clientInfo->sessionInfo, &header, packetBuffer);
+	outHeader->code = PACKET_CODE;
+	outHeader->msgType = HEADER_SC_MOVE_START;
+	outHeader->payLoadSize = outPacketBuffer->GetDataSize();
 }
 
 void Socket::MoveStopRequest(const SessionInfo* sessionInfo, PacketBuffer& packetBuffer)
@@ -547,6 +599,7 @@ void Socket::MoveStopRequest(const SessionInfo* sessionInfo, PacketBuffer& packe
 	short x;
 	short y;
 	ClientInfo* clientInfo = nullptr;
+	HeaderInfo header;
 
 	packetBuffer >> direction;
 	packetBuffer >> x;
@@ -570,7 +623,13 @@ void Socket::MoveStopRequest(const SessionInfo* sessionInfo, PacketBuffer& packe
 			sessionInfo->sessionID, clientInfo->x, clientInfo->y, x, y);
 		x = clientInfo->x;
 		y = clientInfo->y;
-		_ASSERT(false);
+
+		SyncMakePacket(&header, &packetBuffer, clientInfo);
+		SendAroundSector_Broadcast(clientInfo->sessionInfo->sessionID, clientInfo->curSectorPos.x, clientInfo->curSectorPos.y,
+			header, packetBuffer);
+		//return;
+
+		//_ASSERT(false);
 	}
 
 	if (clientInfo->direction != direction)
@@ -582,24 +641,213 @@ void Socket::MoveStopRequest(const SessionInfo* sessionInfo, PacketBuffer& packe
 	}
 	
 	clientInfo->isMove = false;
-	MoveStopMakePacket(clientInfo, packetBuffer);
+
+	MoveStopMakePacket(&header, &packetBuffer, clientInfo);
+	SendAroundSector_Broadcast(clientInfo->sessionInfo->sessionID, clientInfo->curSectorPos.x, clientInfo->curSectorPos.y,
+		header, packetBuffer);
 }
 
-void Socket::MoveStopMakePacket(const ClientInfo* clientInfo, PacketBuffer& packetBuffer)
+void Socket::MoveStopMakePacket(HeaderInfo* outHeader, PacketBuffer* outPacketBuffer, const ClientInfo* clientInfo)
 {
+	outPacketBuffer->Clear();
+	*outPacketBuffer << clientInfo->sessionInfo->sessionID;
+	*outPacketBuffer << clientInfo->direction;
+	*outPacketBuffer << clientInfo->x;
+	*outPacketBuffer << clientInfo->y;
+
+	outHeader->code = PACKET_CODE;
+	outHeader->msgType = HEADER_SC_MOVE_STOP;
+	outHeader->payLoadSize = outPacketBuffer->GetDataSize();
+}
+
+void Socket::AttackRequest(const SessionInfo* sessionInfo, PacketBuffer& packetBuffer, const BYTE attackNum)
+{
+	BYTE direction;
+	short x;
+	short y;
+	ClientInfo* clientInfo = nullptr;
 	HeaderInfo header;
 
-	packetBuffer.Clear();
-	packetBuffer << clientInfo->sessionInfo->sessionID;
-	packetBuffer << clientInfo->direction;
-	packetBuffer << clientInfo->x;
-	packetBuffer << clientInfo->y;
+	packetBuffer >> direction;
+	packetBuffer >> x;
+	packetBuffer >> y;
 
-	header.code = PACKET_CODE;
-	header.msgType = HEADER_SC_MOVE_STOP;
-	header.payLoadSize = packetBuffer.GetDataSize();
+	clientInfo = FindClientInfo(sessionInfo->sessionID);
+	if (clientInfo == nullptr)
+	{
+		CONSOLE_LOG(LOG_LEVEL_ERROR, L"ClientData Find Error[ID:%d]",
+			sessionInfo->sessionID);
+		return;
+	}
+	// 클라이언트와 서버의 캐릭터 좌표 차이가 범위 이상이면 에러 처리진행.
+	if (abs(x - clientInfo->x) >= ERROR_RANGE || abs(y - clientInfo->y) >= ERROR_RANGE)
+	{
+		CONSOLE_LOG(LOG_LEVEL_DEBUG, L"ERROR_RANGE SessionID:%d / server_x: %d / server_y:%d / client_x: %d / client_y: %d",
+			sessionInfo->sessionID, clientInfo->x, clientInfo->y, x, y);
+		x = clientInfo->x;
+		y = clientInfo->y;
 
-	SendBroadcast(clientInfo->sessionInfo, &header, packetBuffer);
+		SyncMakePacket(&header, &packetBuffer, clientInfo);
+		SendAroundSector_Broadcast(clientInfo->sessionInfo->sessionID, clientInfo->curSectorPos.x, clientInfo->curSectorPos.y,
+			header, packetBuffer);
+		//return;
+
+		//_ASSERT(false);
+	}
+
+	if (clientInfo->direction != direction)
+	{
+		CONSOLE_LOG(LOG_LEVEL_DEBUG, L"direction uncorrect! SessionID:%d / server_dir: %d / client_dir:%d",
+			sessionInfo->sessionID, clientInfo->direction, direction);
+		_ASSERT(false);
+		direction = clientInfo->direction;
+	}
+
+	clientInfo->isMove = false;
+	CONSOLE_LOG(LOG_LEVEL_DEBUG, L"Attack_%d SessionID:%d / dir:%d / x: %d / y:%d",
+		attackNum, sessionInfo->sessionID, direction, x, y);
+
+	AttackCollision(clientInfo, attackNum);
+	AttackMakePacket(&header, &packetBuffer, clientInfo, attackNum);
+	SendAroundSector_Broadcast(clientInfo->sessionInfo->sessionID, clientInfo->curSectorPos.x, clientInfo->curSectorPos.y,
+		header, packetBuffer);
+}
+
+void Socket::AttackMakePacket(HeaderInfo* outHeader, PacketBuffer* outPacketBuffer, const ClientInfo* clientInfo, const BYTE attackNum)
+{
+	outPacketBuffer->Clear();
+	*outPacketBuffer << clientInfo->sessionInfo->sessionID;
+	*outPacketBuffer << clientInfo->direction;
+	*outPacketBuffer << clientInfo->x;
+	*outPacketBuffer << clientInfo->y;
+
+	outHeader->code = PACKET_CODE;
+	switch (attackNum)
+	{
+	case 1:
+		outHeader->msgType = HEADER_SC_ATTACK1;
+		break;
+	case 2:
+		outHeader->msgType = HEADER_SC_ATTACK2;
+		break;
+	case 3:
+		outHeader->msgType = HEADER_SC_ATTACK3;
+		break;
+	default:
+		_ASSERT(false);
+		return;
+	}
+	
+	outHeader->payLoadSize = outPacketBuffer->GetDataSize();
+}
+
+void Socket::AttackCollision(const ClientInfo* clientInfo, const BYTE attackNum)
+{
+	HeaderInfo header;
+	PacketBuffer packetBuffer(PacketBuffer::BUFFER_SIZE_DEFAULT);
+
+	int mySectorX = clientInfo->curSectorPos.x;
+	int mySectorY = clientInfo->curSectorPos.y;
+	int attackSectorX = 0;
+	bool isAttackSection = true;
+	BYTE attackDamage = 0;
+
+	// 방향에 따라서 오른쪽 혹은 왼쪽 섹터만 추가로 검사한다. 섹터의 경계로 충돌체크가 안되는 경우 방지
+	switch (clientInfo->direction)
+	{
+	case ACTION_MOVE_LL:
+		{
+			attackSectorX = mySectorX - 1;
+			if (attackSectorX < 0)
+				isAttackSection = false;
+		}
+		break;
+	case ACTION_MOVE_RR:
+		{
+			attackSectorX = mySectorX + 1;
+			if (attackSectorX >= SECTOR_MAX_X)
+				isAttackSection = false;
+		}
+		break;
+	default:
+		_ASSERT(false);
+		break;
+	}
+
+	switch (attackNum)
+	{
+	case 1:
+		attackDamage = 1;
+		break;
+	case 2:
+		attackDamage = 5;
+		break;
+	case 3:
+		attackDamage = 10;
+		break;
+	default:
+		_ASSERT(false);
+		return;
+	}
+
+	for (ClientInfo* _clientInfo : mSectorData[mySectorY][mySectorX])
+	{
+		if (clientInfo == _clientInfo)
+			continue;
+
+		if (CalDistance(clientInfo->x, clientInfo->y, _clientInfo->x, _clientInfo->y) <= ATTACK_RANGE)
+		{
+			_clientInfo->hp -= attackDamage;
+			if (_clientInfo->hp <= 0)
+				_clientInfo->hp = 0;
+
+			CONSOLE_LOG(LOG_LEVEL_DEBUG, L"MySector Damage AttackID:%d VictimID:%d VictimHP:%d",
+				clientInfo->sessionInfo->sessionID, _clientInfo->sessionInfo->sessionID, _clientInfo->hp);
+
+			DamageMakePacket(&header, &packetBuffer, clientInfo->sessionInfo->sessionID, 
+				_clientInfo->sessionInfo->sessionID, _clientInfo->hp);
+			SendAroundSector_Broadcast(_clientInfo->sessionInfo->sessionID, _clientInfo->curSectorPos.x, _clientInfo->curSectorPos.y,
+				header, packetBuffer, true);
+			return;
+		}
+	}
+
+	if (isAttackSection == true)
+	{
+		for (ClientInfo* _clientInfo : mSectorData[mySectorY][attackSectorX])
+		{
+			if (clientInfo == _clientInfo)
+				continue;
+
+			if (CalDistance(clientInfo->x, clientInfo->y, _clientInfo->x, _clientInfo->y) <= ATTACK_RANGE)
+			{
+				_clientInfo->hp -= attackDamage;
+				if (_clientInfo->hp <= 0)
+					_clientInfo->hp = 0;
+
+				DamageMakePacket(&header, &packetBuffer, clientInfo->sessionInfo->sessionID,
+					_clientInfo->sessionInfo->sessionID, _clientInfo->hp);
+				SendAroundSector_Broadcast(_clientInfo->sessionInfo->sessionID, _clientInfo->curSectorPos.x, _clientInfo->curSectorPos.y,
+					header, packetBuffer, true);
+
+				CONSOLE_LOG(LOG_LEVEL_DEBUG, L"DirSector Damage AttackID:%d VictimID:%d VictimHP:%d",
+					clientInfo->sessionInfo->sessionID, _clientInfo->sessionInfo->sessionID, _clientInfo->hp);
+				return;
+			}
+		}
+	}
+}
+
+void Socket::DamageMakePacket(HeaderInfo* outHeader, PacketBuffer* outPacketBuffer, const DWORD attackID, const DWORD victimID, const BYTE victimHP)
+{
+	outPacketBuffer->Clear();
+	*outPacketBuffer << attackID;
+	*outPacketBuffer << victimID;
+	*outPacketBuffer << victimHP;
+
+	outHeader->code = PACKET_CODE;
+	outHeader->msgType = HEADER_SC_DAMAGE;
+	outHeader->payLoadSize = outPacketBuffer->GetDataSize();
 }
 
 void Socket::CreateCharacter_MakePacket(const ClientInfo* clientInfo)
@@ -620,63 +868,100 @@ void Socket::CreateCharacter_MakePacket(const ClientInfo* clientInfo)
 	SendUnicast(clientInfo->sessionInfo, &header, packetBuffer);
 }
 
-void Socket::CreateCharacterOther_MakePacket(const SessionInfo* sessionInfo)
+//void Socket::CreateCharacterOther_MakePacket(const SessionInfo* sessionInfo)
+//{
+//	HeaderInfo header;
+//	PacketBuffer packetBuffer(PacketBuffer::BUFFER_SIZE_DEFAULT);
+//	ClientInfo* clientInfo = nullptr;
+//
+//	for (auto iterClietData : mClientData)
+//	{
+//		clientInfo = iterClietData.second;
+//
+//		packetBuffer.Clear();
+//		packetBuffer << clientInfo->sessionInfo->sessionID;
+//		packetBuffer << clientInfo->direction;
+//		packetBuffer << clientInfo->x;
+//		packetBuffer << clientInfo->y;
+//		packetBuffer << clientInfo->hp;
+//
+//		header.code = PACKET_CODE;
+//		header.msgType = HEADER_SC_CREATE_OTHER_CHARACTER;
+//		header.payLoadSize = packetBuffer.GetDataSize();
+//
+//		if (sessionInfo->sessionID == clientInfo->sessionInfo->sessionID)
+//		{
+//			SendBroadcast(clientInfo->sessionInfo, &header, packetBuffer);
+//		}
+//		else
+//		{
+//			SendUnicast(sessionInfo, &header, packetBuffer);
+//		}
+//	}
+//}
+
+void Socket::CreateOtherCharacter_MakePacket(HeaderInfo* outHeader, PacketBuffer* outPacketBuffer, const ClientInfo* clientInfo)
 {
-	HeaderInfo header;
-	PacketBuffer packetBuffer(PacketBuffer::BUFFER_SIZE_DEFAULT);
-	ClientInfo* clientInfo = nullptr;
+	outPacketBuffer->Clear();
 
-	for (auto iterClietData : mClientData)
-	{
-		clientInfo = iterClietData.second;
+	*outPacketBuffer << clientInfo->sessionInfo->sessionID;
+	*outPacketBuffer << clientInfo->direction;
+	*outPacketBuffer << clientInfo->x;
+	*outPacketBuffer << clientInfo->y;
+	*outPacketBuffer << clientInfo->hp;
 
-		packetBuffer.Clear();
-		packetBuffer << clientInfo->sessionInfo->sessionID;
-		packetBuffer << clientInfo->direction;
-		packetBuffer << clientInfo->x;
-		packetBuffer << clientInfo->y;
-		packetBuffer << clientInfo->hp;
-
-		header.code = PACKET_CODE;
-		header.msgType = HEADER_SC_CREATE_OTHER_CHARACTER;
-		header.payLoadSize = packetBuffer.GetDataSize();
-
-		if (sessionInfo->sessionID == clientInfo->sessionInfo->sessionID)
-		{
-			SendBroadcast(clientInfo->sessionInfo, &header, packetBuffer);
-		}
-		else
-		{
-			SendUnicast(sessionInfo, &header, packetBuffer);
-		}
-	}
-
-
-	
+	outHeader->code = PACKET_CODE;
+	outHeader->msgType = HEADER_SC_CREATE_OTHER_CHARACTER;
+	outHeader->payLoadSize = outPacketBuffer->GetDataSize();
 }
 
-void Socket::RemoveCharacter_MakePacket(const ClientInfo* clientInfo)
+void Socket::RemoveCharacter_MakePacket(HeaderInfo* outHeader, PacketBuffer* outPacketBuffer, const ClientInfo* clientInfo)
 {
-	HeaderInfo header;
-	PacketBuffer packetBuffer(PacketBuffer::BUFFER_SIZE_DEFAULT);
+	outPacketBuffer->Clear();
 
-	packetBuffer << clientInfo->sessionInfo->sessionID;
+	//PacketBuffer packetBuffer(PacketBuffer::BUFFER_SIZE_DEFAULT);
+	*outPacketBuffer << clientInfo->sessionInfo->sessionID;
 
-	header.code = PACKET_CODE;
-	header.msgType = HEADER_SC_DELETE_CHARACTER;
-	header.payLoadSize = packetBuffer.GetDataSize();
+	outHeader->code = PACKET_CODE;
+	outHeader->msgType = HEADER_SC_DELETE_CHARACTER;
+	outHeader->payLoadSize = outPacketBuffer->GetDataSize();
 
-	SendBroadcast(clientInfo->sessionInfo, &header, packetBuffer, true);
+	//SendBroadcast(clientInfo->sessionInfo, &header, packetBuffer, true);
+}
+
+void Socket::SyncMakePacket(HeaderInfo* outHeader, PacketBuffer* outPacketBuffer, const ClientInfo* clientInfo)
+{
+	outPacketBuffer->Clear();
+	*outPacketBuffer << clientInfo->sessionInfo->sessionID;
+	*outPacketBuffer << clientInfo->x;
+	*outPacketBuffer << clientInfo->y;
+
+	outHeader->code = PACKET_CODE;
+	outHeader->msgType = HEADER_SC_SYNC;
+	outHeader->payLoadSize = outPacketBuffer->GetDataSize();
 }
 
 void Socket::CharacterUpdate()
 {
 	ClientInfo* clientInfo = nullptr;
+	unordered_map<DWORD, ClientInfo*>::iterator iterClientData;
 
-	for (auto iterClientData : mClientData)
+	for (iterClientData = mClientData.begin();
+		iterClientData != mClientData.end();)
 	{
-		clientInfo = iterClientData.second;
-		ActionProc(clientInfo);
+		clientInfo = iterClientData->second;
+
+		// 캐릭터 사망 처리 체크
+		if (clientInfo->hp <= 0)
+		{
+			CONSOLE_LOG(LOG_LEVEL_DEBUG, L"[SessionID:%d] Dead", clientInfo->sessionInfo->sessionID);
+			iterClientData = RemoveSessionInfo(clientInfo->sessionInfo->sessionID);
+		}
+		else
+		{
+			ActionProc(clientInfo);
+			++iterClientData;
+		}	
 	}
 }
 
@@ -791,6 +1076,10 @@ void Socket::ActionProc(ClientInfo* clientInfo)
 
 	CONSOLE_LOG(LOG_LEVEL_DEBUG, L"Move SessionID:%d server_x:%d server_y:%d",
 		clientInfo->sessionInfo->sessionID, clientInfo->x, clientInfo->y);
+
+	// 해당 캐릭터 섹터 갱신
+	if(isMove == true)
+		SectorUpdateCharcater(clientInfo, false);
 }
 
 bool Socket::MoveCurX(short* outCurX, const bool isLeft)
@@ -855,37 +1144,62 @@ void Socket::AddSessionInfo(const SOCKET clientSock, SOCKADDR_IN& clientAddr)
 	sessionInfo->sendRingBuffer = new RingBuffer;
 
 	mSessionData.emplace(sessionInfo->sessionID, sessionInfo);
+	CONSOLE_LOG(LOG_LEVEL_DEBUG, L"[sessionID:%d] session insert size:%d", sessionInfo->sessionID, mSessionData.size());
 	AddClientInfo(sessionInfo);
 }
 
-void Socket::RemoveSessionInfo(const DWORD sessionID)
+unordered_map<DWORD, Socket::ClientInfo*>::iterator Socket::RemoveSessionInfo(const DWORD sessionID)
 {
+	HeaderInfo header;
+	PacketBuffer packetBuffer(PacketBuffer::BUFFER_SIZE_DEFAULT);
+	ClientInfo* clientInfo = nullptr;
+	unordered_map<DWORD, Socket::ClientInfo*>::iterator iterClientData;
+
 	// 유저 데이터 삭제
-	auto iterClientData = mClientData.find(sessionID);
+	iterClientData = mClientData.find(sessionID);
 	if (iterClientData == mClientData.end())
 	{
 		CONSOLE_LOG(LOG_LEVEL_ERROR, L"RemoveClientInfo clientData find error![sessionID:%d]", sessionID);
-		return;
+		return iterClientData;
 	}
-	// 다른 유저들과 나에게 캐릭터 삭제 패킷 전송
-	RemoveCharacter_MakePacket(iterClientData->second);
+	clientInfo = iterClientData->second;
+	_ASSERT(clientInfo != nullptr);
 
-	SafeDelete(iterClientData->second);
-	mClientData.erase(iterClientData);
+	// 다른 유저들과 나에게 캐릭터 삭제 패킷 전송
+	RemoveCharacter_MakePacket(&header, &packetBuffer, clientInfo);
+
+	// 섹터정보 삭제
+	SendAroundSector_Broadcast(sessionID, clientInfo->curSectorPos.x, clientInfo->curSectorPos.y, header, packetBuffer);
+	
+	for (list<ClientInfo*>::iterator iterSectorData = mSectorData[clientInfo->curSectorPos.y][clientInfo->curSectorPos.x].begin();
+		iterSectorData != mSectorData[clientInfo->curSectorPos.y][clientInfo->curSectorPos.x].end(); iterSectorData++)
+	{
+		if (*iterSectorData == clientInfo)
+		{
+			mSectorData[clientInfo->curSectorPos.y][clientInfo->curSectorPos.x].erase(iterSectorData);
+			CONSOLE_LOG(LOG_LEVEL_DEBUG, L"[sector id:%d] sector erase / sectorX:%d / sectorY:%d",
+				clientInfo->sessionInfo->sessionID, clientInfo->curSectorPos.x, clientInfo->curSectorPos.y);
+			break;
+		}
+	}
+
+	SafeDelete(clientInfo);
+	iterClientData = mClientData.erase(iterClientData);
 
 	// 세션 데이터 삭제
 	auto iterSessionData = mSessionData.find(sessionID);
 	if (iterSessionData == mSessionData.end())
 	{
 		CONSOLE_LOG(LOG_LEVEL_ERROR, L"RemoveClientInfo session find error![sessionID:%d]", sessionID);
-		return;
+		return iterClientData;
 	}
 	closesocket(iterSessionData->second->clientSock);
 	SafeDelete(iterSessionData->second->recvRingBuffer);
 	SafeDelete(iterSessionData->second->sendRingBuffer);
 	SafeDelete(iterSessionData->second);
-	--mSession_IDNum;
 	mSessionData.erase(iterSessionData);
+	CONSOLE_LOG(LOG_LEVEL_DEBUG, L"[sessionID:%d] session erase size:%d", sessionID, mSessionData.size());
+	return iterClientData;
 }
 
 void Socket::HeaderNameInsert()
@@ -893,8 +1207,11 @@ void Socket::HeaderNameInsert()
 	mHeaderNameData.emplace(10, L"HEADER_CS_MOVE_START");
 	mHeaderNameData.emplace(12, L"HEADER_CS_MOVE_STOP");
 	mHeaderNameData.emplace(20, L"HEADER_CS_ATTACK1");
+	mHeaderNameData.emplace(21, L"HEADER_SC_ATTACK1");
 	mHeaderNameData.emplace(22, L"HEADER_CS_ATTACK2");
+	mHeaderNameData.emplace(23, L"HEADER_SC_ATTACK2");
 	mHeaderNameData.emplace(24, L"HEADER_CS_ATTACK3");
+	mHeaderNameData.emplace(25, L"HEADER_SC_ATTACK3");
 	mHeaderNameData.emplace(0, L"HEADER_SC_CREATE_MY_CHARACTER");
 	mHeaderNameData.emplace(1, L"HEADER_SC_CREATE_OTHER_CHARACTER");
 	mHeaderNameData.emplace(2, L"HEADER_SC_DELETE_CHARACTER");
@@ -914,7 +1231,10 @@ void Socket::AddClientInfo(SessionInfo* sessionInfo)
 	clientInfo->y = 40;
 	mClientData.emplace(sessionInfo->sessionID, clientInfo);
 	CreateCharacter_MakePacket(clientInfo);
-	CreateCharacterOther_MakePacket(clientInfo->sessionInfo);
+	//CreateCharacterOther_MakePacket(clientInfo->sessionInfo);
+
+	// 해당 캐릭터 섹터 갱신
+	SectorUpdateCharcater(clientInfo, true);
 }
 
 Socket::ClientInfo* Socket::FindClientInfo(const DWORD sessionID)
@@ -931,3 +1251,255 @@ Socket::ClientInfo* Socket::FindClientInfo(const DWORD sessionID)
 
 	return clientInfo;
 }
+
+void Socket::SectorUpdateCharcater(ClientInfo* clientInfo, const bool isCreateCharacter)
+{
+	// 최초 생성 
+	clientInfo->oldSectorPos = clientInfo->curSectorPos;
+	clientInfo->curSectorPos.x = clientInfo->x / mSectorRange.x;
+	clientInfo->curSectorPos.y = clientInfo->y / mSectorRange.y;
+
+	CONSOLE_LOG(LOG_LEVEL_DEBUG, L"[sesssionID:%d] sectorX:%d sectorY:%d", 
+		clientInfo->sessionInfo->sessionID, clientInfo->curSectorPos.x, clientInfo->curSectorPos.y);
+
+	if (clientInfo->curSectorPos.y < 0 || clientInfo->curSectorPos.y >= SECTOR_MAX_Y ||
+		clientInfo->curSectorPos.x < 0 || clientInfo->curSectorPos.x >= SECTOR_MAX_X)
+	{
+		CONSOLE_LOG(LOG_LEVEL_DEBUG, L"[sesssionID:%d] sector Error");
+		return;
+	}
+	
+	// 최초 캐릭터 생성이 아니면 중복해서 섹터 데이터에 캐릭터가 추가되는것을 방지
+	if (isCreateCharacter == true)
+	{
+		// 새로운 섹터에 해당 캐릭터 삽입
+		mSectorData[clientInfo->curSectorPos.y][clientInfo->curSectorPos.x].emplace_back(clientInfo);
+		// 섹터가 변경되었기 때문에 추가 및 삭제되 섹터 계산하여 섹터 패킷 전송
+		CreateSectorMyAroundPacket(clientInfo);
+		return;
+	}
+	else
+	{
+		if (clientInfo->oldSectorPos.x == clientInfo->curSectorPos.x &&
+			clientInfo->oldSectorPos.y == clientInfo->curSectorPos.y)
+			return;
+	}
+
+
+	// 새로운 섹터에 해당 캐릭터 삽입
+	mSectorData[clientInfo->curSectorPos.y][clientInfo->curSectorPos.x].emplace_back(clientInfo);
+	CONSOLE_LOG(LOG_LEVEL_DEBUG, L"[sector id:%d] sector insert / sectorX:%d / sectorY:%d", 
+		clientInfo->sessionInfo->sessionID, clientInfo->curSectorPos.x, clientInfo->curSectorPos.y);
+	// 이전에 있던 섹터 캐릭터 삭제
+	for (list<ClientInfo*>::iterator iterSectorData = mSectorData[clientInfo->oldSectorPos.y][clientInfo->oldSectorPos.x].begin();
+		iterSectorData != mSectorData[clientInfo->oldSectorPos.y][clientInfo->oldSectorPos.x].end(); iterSectorData++)
+	{
+		if (*iterSectorData == clientInfo)
+		{
+			mSectorData[clientInfo->oldSectorPos.y][clientInfo->oldSectorPos.x].erase(iterSectorData);
+			CONSOLE_LOG(LOG_LEVEL_DEBUG, L"[sector id:%d] sector erase / sectorX:%d / sectorY:%d",
+				clientInfo->sessionInfo->sessionID, clientInfo->oldSectorPos.x, clientInfo->oldSectorPos.y);
+			break;
+		}
+	}
+
+	// 섹터가 변경되었기 때문에 추가 및 삭제되 섹터 계산하여 섹터 패킷 전송
+	SectorUpdatePacket(clientInfo);
+	
+}
+
+void Socket::GetSectorAround(int sectorX, int sectorY, SectorAroundInfo* sectorAround)
+{
+	--sectorX;
+	--sectorY;
+
+	sectorAround->count = 0;
+	for (int y = 0; y < 3; ++y)
+	{
+		if (sectorY + y < 0 || sectorY + y >= SECTOR_MAX_Y)
+			continue;
+
+		for (int x = 0; x < 3; ++x)
+		{
+			if (sectorX + x < 0 || sectorX + x >= SECTOR_MAX_X)
+				continue;
+
+			sectorAround->arround[sectorAround->count].x = sectorX + x;
+			sectorAround->arround[sectorAround->count].y = sectorY + y;
+			++sectorAround->count;
+		}
+	}
+}
+
+void Socket::GetUpdateSectorAround(ClientInfo* clientInfo, SectorAroundInfo* outRemoveSector, SectorAroundInfo* outAddSector)
+{
+	bool isFind;
+	SectorAroundInfo oldSector;
+	SectorAroundInfo curSector;
+
+	oldSector.count = 0;
+	curSector.count = 0;
+	outRemoveSector->count = 0;
+	outAddSector->count = 0;
+
+	GetSectorAround(clientInfo->oldSectorPos.x, clientInfo->oldSectorPos.y, &oldSector);
+	GetSectorAround(clientInfo->curSectorPos.x, clientInfo->curSectorPos.y, &curSector);
+
+	// 이전(OldSector) 섹터 정보 중, 신규섹터(AddSector) 에는 없는 정보를 찾아서 RemoveSector에 넣음
+	for (int oldCount = 0; oldCount < oldSector.count; oldCount++)
+	{
+		isFind = false;
+		for(int curCount = 0; curCount < curSector.count; curCount++)
+		{
+			if (oldSector.arround[oldCount].x == curSector.arround[curCount].x &&
+				oldSector.arround[oldCount].y == curSector.arround[curCount].y)
+			{
+				isFind = true;
+				break;
+			}
+		}
+		if (isFind == false)
+		{
+			outRemoveSector->arround[outRemoveSector->count] = oldSector.arround[oldCount];
+			outRemoveSector->count++;
+		}
+	}
+
+	// 현재(CurSector) 섹터 정보중 이전 (OldSector) 섹터에 없는 정보를 찾아서 AddSector에 넣음
+	for (int curCount = 0; curCount < curSector.count; curCount++)
+	{
+		isFind = false;
+		for (int oldCount = 0; oldCount < oldSector.count; oldCount++)
+		{
+			if (oldSector.arround[oldCount].x == curSector.arround[curCount].x &&
+				oldSector.arround[oldCount].y == curSector.arround[curCount].y)
+			{
+				isFind = true;
+				break;
+			}
+		}
+		if (isFind == false)
+		{
+			outAddSector->arround[outAddSector->count] = curSector.arround[curCount];
+			outAddSector->count++;
+		}
+	}
+}
+
+void Socket::SectorUpdatePacket(ClientInfo* clientInfo)
+{
+	SectorAroundInfo addSector;
+	SectorAroundInfo removeSector;
+	PacketBuffer packetBuffer(PacketBuffer::BUFFER_SIZE_DEFAULT);
+	HeaderInfo header;
+	list<ClientInfo*>::iterator iterClientInfo;
+
+	GetUpdateSectorAround(clientInfo, &removeSector, &addSector);
+
+	//RemoveSector에 내자신 캐릭터 정보 보내어 삭제시키기
+	RemoveCharacter_MakePacket(&header, &packetBuffer, clientInfo);
+	for (int i = 0; i < removeSector.count; i++)
+	{
+		SendSector_Broadcast(clientInfo->sessionInfo->sessionID, 
+			removeSector.arround[i].x, removeSector.arround[i].y, header, packetBuffer);
+	}
+
+	//RemoveSector의 캐릭터 삭제정보를 나한테 보내기
+	for (int i = 0; i < removeSector.count; i++)
+	{
+		for (auto _clientInfo : mSectorData[removeSector.arround[i].y][removeSector.arround[i].x])
+		{
+			// 자기스스로에게 보내지 않음
+			if (_clientInfo == clientInfo)
+				continue;
+
+			RemoveCharacter_MakePacket(&header, &packetBuffer, _clientInfo);
+			SendUnicast(clientInfo->sessionInfo, &header, packetBuffer);
+		}
+	}
+
+	//AddSector에 내자신 캐릭터 생성 정보 보내기
+	CreateOtherCharacter_MakePacket(&header, &packetBuffer, clientInfo);
+	for (int i = 0; i < addSector.count; i++)
+	{
+		SendSector_Broadcast(clientInfo->sessionInfo->sessionID,
+			addSector.arround[i].x, addSector.arround[i].y, header, packetBuffer);
+	}
+
+	//AddSector의 캐릭터 생성정보를 나한테 보내기
+	for (int i = 0; i < addSector.count; i++)
+	{
+		for (auto _clientInfo : mSectorData[addSector.arround[i].y][addSector.arround[i].x])
+		{
+			// 자기스스로에게 보내지 않음
+			if (_clientInfo == clientInfo)
+				continue;
+
+			CreateOtherCharacter_MakePacket(&header, &packetBuffer, _clientInfo);
+			SendUnicast(clientInfo->sessionInfo, &header, packetBuffer);
+		}
+	}
+
+
+	//AddSector에 내자신 캐릭터 움직임 정보 보내기
+	MoveStartMakePacket(&header, &packetBuffer, clientInfo);
+	for (int i = 0; i < addSector.count; i++)
+	{
+		SendSector_Broadcast(clientInfo->sessionInfo->sessionID,
+			addSector.arround[i].x, addSector.arround[i].y, header, packetBuffer);
+	}
+
+	//AddSector의 캐릭터 움직임 정보를 나한테 보내기
+	for (int i = 0; i < addSector.count; i++)
+	{
+		for (auto _clientInfo : mSectorData[addSector.arround[i].y][addSector.arround[i].x])
+		{
+			// 자기스스로에게 보내지 않음
+			if (_clientInfo == clientInfo)
+				continue;
+			if (_clientInfo->isMove == true)
+			{
+				MoveStartMakePacket(&header, &packetBuffer, _clientInfo);
+				SendUnicast(clientInfo->sessionInfo, &header, packetBuffer);
+			}
+		}
+	}
+}
+
+void Socket::CreateSectorMyAroundPacket(ClientInfo* clientInfo)
+{
+	SectorAroundInfo mySector;
+	PacketBuffer packetBuffer(PacketBuffer::BUFFER_SIZE_DEFAULT);
+	HeaderInfo header;
+
+	GetSectorAround(clientInfo->curSectorPos.x, clientInfo->curSectorPos.y, &mySector);
+
+	//내주변 섹터에 내자신 캐릭터 생성 정보 보내기
+	CreateOtherCharacter_MakePacket(&header, &packetBuffer, clientInfo);
+	for (int i = 0; i < mySector.count; i++)
+	{
+		SendSector_Broadcast(clientInfo->sessionInfo->sessionID,
+			mySector.arround[i].x, mySector.arround[i].y, header, packetBuffer);
+	}
+
+	//내주변 섹터의 캐릭터 생성정보를 나한테 보내기
+	for (int i = 0; i < mySector.count; i++)
+	{
+		for (auto _clientInfo : mSectorData[mySector.arround[i].y][mySector.arround[i].x])
+		{
+			if (clientInfo == _clientInfo)
+				continue;
+
+			CreateOtherCharacter_MakePacket(&header, &packetBuffer, _clientInfo);
+			SendUnicast(clientInfo->sessionInfo, &header, packetBuffer);
+
+			if (_clientInfo->isMove == true)
+			{
+				MoveStartMakePacket(&header, &packetBuffer, _clientInfo);
+				SendUnicast(clientInfo->sessionInfo, &header, packetBuffer);
+			}
+		}
+	}
+}
+
+
