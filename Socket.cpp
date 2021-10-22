@@ -44,7 +44,7 @@ bool Socket::Initialize()
 	serveraddr.sin_port = htons(SERVER_PORT);
 	InetNtop(AF_INET, &serveraddr.sin_addr, serverIP, _countof(serverIP));
 
-	CONSOLE_LOG(LOG_LEVEL_DEBUG, L"[CHAT SERVER] SERVER IP: %s SERVER Port:%d", serverIP, ntohs(serveraddr.sin_port));
+	CONSOLE_LOG(LOG_LEVEL_WARNING, L"[CHAT SERVER] SERVER IP: %s SERVER Port:%d", serverIP, ntohs(serveraddr.sin_port));
 
 	returnValue = bind(mListenSock, (SOCKADDR*)&serveraddr, sizeof(serveraddr));
 	if (returnValue == SOCKET_ERROR)
@@ -60,7 +60,7 @@ bool Socket::Initialize()
 		CONSOLE_LOG(LOG_LEVEL_ERROR, L"listen error:%d ", WSAGetLastError());
 		return false;
 	}
-	CONSOLE_LOG(LOG_LEVEL_DEBUG, L"server open\n");
+	CONSOLE_LOG(LOG_LEVEL_WARNING, L"server open\n");
 
 	// 논블록킹 소켓으로 전환
 	u_long on = 1;
@@ -74,8 +74,8 @@ bool Socket::Initialize()
 	HeaderNameInsert();
 	
 	// 섹터 단위 지정
-	mSectorRange.x = RANGE_MOVE_RIGHT / SECTOR_MAX_X;
-	mSectorRange.y = RANGE_MOVE_BOTTOM / SECTOR_MAX_Y;
+	mSectorMaxRange.x = RANGE_MOVE_RIGHT / SECTOR_MAX_X;
+	mSectorMaxRange.y = RANGE_MOVE_BOTTOM / SECTOR_MAX_Y;
 
 	return true;
 }
@@ -382,7 +382,7 @@ void Socket::RecvProcess(SessionInfo* sessionInfo)
 			return;
 		}
 
-		CONSOLE_LOG(LOG_LEVEL_DEBUG, L"[sessionID:%d] Header Type:%s RingBuf useSize:%d", 
+		CONSOLE_LOG(LOG_LEVEL_WARNING, L"[sessionID:%d] Header Type:%s RingBuf useSize:%d", 
 			sessionInfo->sessionID,
 			mHeaderNameData[header.msgType].c_str(),
 			sessionInfo->recvRingBuffer->GetUseSize());
@@ -444,6 +444,11 @@ void Socket::PacketProcess(const WORD msgType, const SessionInfo* sessionInfo, P
 			AttackRequest(sessionInfo, packetBuffer, 3);
 		}
 		break;
+	case HEADER_CS_ECHO:
+		{
+			EchoRequest(sessionInfo, packetBuffer);
+		}
+		break;
 	default:
 		CONSOLE_LOG(LOG_LEVEL_ERROR, L"unknown msgType[%d]", msgType);
 		return;
@@ -456,7 +461,7 @@ void Socket::SendUnicast(const SessionInfo* sessionInfo, const HeaderInfo* heade
 	sessionInfo->sendRingBuffer->Enqueue((char*)header, sizeof(HeaderInfo));
 	sessionInfo->sendRingBuffer->Enqueue(packetBuffer.GetBufferPtr(), packetBuffer.GetDataSize());
 
-	CONSOLE_LOG(LOG_LEVEL_DEBUG, L"[SessionID:%d] Send Header Type:%s RingBuf useSize:%d",
+	CONSOLE_LOG(LOG_LEVEL_WARNING, L"[SessionID:%d] Send Header Type:%s RingBuf useSize:%d",
 		sessionInfo->sessionID,
 		mHeaderNameData[header->msgType].c_str(),
 		sessionInfo->sendRingBuffer->GetUseSize());
@@ -529,7 +534,7 @@ void Socket::MoveStartRequest(const SessionInfo* sessionInfo, PacketBuffer& pack
 	// 클라이언트와 서버의 캐릭터 좌표 차이가 범위 이상이면 에러 처리진행.
 	if (abs(x - clientInfo->x) >= ERROR_RANGE || abs(y - clientInfo->y) >= ERROR_RANGE)
 	{
-		CONSOLE_LOG(LOG_LEVEL_DEBUG, L"ERROR_RANGE SessionID:%d / server_x: %d / server_y:%d / client_x: %d / client_y: %d",
+		CONSOLE_LOG(LOG_LEVEL_ERROR, L"ERROR_RANGE SessionID:%d / server_x: %d / server_y:%d / client_x: %d / client_y: %d",
 			sessionInfo->sessionID, clientInfo->x, clientInfo->y, x, y);
 		x = clientInfo->x;
 		y = clientInfo->y;
@@ -563,7 +568,7 @@ void Socket::MoveStartRequest(const SessionInfo* sessionInfo, PacketBuffer& pack
 		break;
 	default:
 		{
-			CONSOLE_LOG(LOG_LEVEL_DEBUG, L"unknown direction:%d", direction);
+			CONSOLE_LOG(LOG_LEVEL_ERROR, L"unknown direction:%d", direction);
 		}
 		return;
 	}
@@ -619,7 +624,7 @@ void Socket::MoveStopRequest(const SessionInfo* sessionInfo, PacketBuffer& packe
 	// 클라이언트와 서버의 캐릭터 좌표 차이가 범위 이상이면 에러 처리진행.
 	if (abs(x - clientInfo->x) >= ERROR_RANGE || abs(y - clientInfo->y) >= ERROR_RANGE)
 	{
-		CONSOLE_LOG(LOG_LEVEL_DEBUG, L"ERROR_RANGE SessionID:%d / server_x: %d / server_y:%d / client_x: %d / client_y: %d",
+		CONSOLE_LOG(LOG_LEVEL_ERROR, L"ERROR_RANGE SessionID:%d / server_x: %d / server_y:%d / client_x: %d / client_y: %d",
 			sessionInfo->sessionID, clientInfo->x, clientInfo->y, x, y);
 		x = clientInfo->x;
 		y = clientInfo->y;
@@ -634,10 +639,10 @@ void Socket::MoveStopRequest(const SessionInfo* sessionInfo, PacketBuffer& packe
 
 	if (clientInfo->direction != direction)
 	{
-		CONSOLE_LOG(LOG_LEVEL_DEBUG, L"direction uncorrect! SessionID:%d / server_dir: %d / client_dir:%d",
+		CONSOLE_LOG(LOG_LEVEL_ERROR, L"direction uncorrect! SessionID:%d / server_dir: %d / client_dir:%d",
 			sessionInfo->sessionID, clientInfo->direction, direction);
-		_ASSERT(false);
-		direction = clientInfo->direction;
+	//	_ASSERT(false);
+		clientInfo->direction = direction;
 	}
 	
 	clientInfo->isMove = false;
@@ -682,7 +687,7 @@ void Socket::AttackRequest(const SessionInfo* sessionInfo, PacketBuffer& packetB
 	// 클라이언트와 서버의 캐릭터 좌표 차이가 범위 이상이면 에러 처리진행.
 	if (abs(x - clientInfo->x) >= ERROR_RANGE || abs(y - clientInfo->y) >= ERROR_RANGE)
 	{
-		CONSOLE_LOG(LOG_LEVEL_DEBUG, L"ERROR_RANGE SessionID:%d / server_x: %d / server_y:%d / client_x: %d / client_y: %d",
+		CONSOLE_LOG(LOG_LEVEL_ERROR, L"ERROR_RANGE SessionID:%d / server_x: %d / server_y:%d / client_x: %d / client_y: %d",
 			sessionInfo->sessionID, clientInfo->x, clientInfo->y, x, y);
 		x = clientInfo->x;
 		y = clientInfo->y;
@@ -697,10 +702,10 @@ void Socket::AttackRequest(const SessionInfo* sessionInfo, PacketBuffer& packetB
 
 	if (clientInfo->direction != direction)
 	{
-		CONSOLE_LOG(LOG_LEVEL_DEBUG, L"direction uncorrect! SessionID:%d / server_dir: %d / client_dir:%d",
+		CONSOLE_LOG(LOG_LEVEL_ERROR, L"direction uncorrect! SessionID:%d / server_dir: %d / client_dir:%d",
 			sessionInfo->sessionID, clientInfo->direction, direction);
-		_ASSERT(false);
-		direction = clientInfo->direction;
+		//_ASSERT(false);
+		clientInfo->direction = direction;
 	}
 
 	clientInfo->isMove = false;
@@ -941,6 +946,22 @@ void Socket::SyncMakePacket(HeaderInfo* outHeader, PacketBuffer* outPacketBuffer
 	outHeader->payLoadSize = outPacketBuffer->GetDataSize();
 }
 
+void Socket::EchoRequest(const SessionInfo* sessionInfo, PacketBuffer& packetBuffer)
+{
+	HeaderInfo header;
+	DWORD time;
+
+	packetBuffer >> time;
+
+	packetBuffer.Clear();
+	packetBuffer << time;
+	header.code = PACKET_CODE;
+	header.msgType = HEADER_SC_ECHO;
+	header.payLoadSize = packetBuffer.GetDataSize();
+
+	SendUnicast(sessionInfo, &header, packetBuffer);
+}
+
 void Socket::CharacterUpdate()
 {
 	ClientInfo* clientInfo = nullptr;
@@ -1074,8 +1095,8 @@ void Socket::ActionProc(ClientInfo* clientInfo)
 		return;
 	}
 
-	CONSOLE_LOG(LOG_LEVEL_DEBUG, L"Move SessionID:%d server_x:%d server_y:%d",
-		clientInfo->sessionInfo->sessionID, clientInfo->x, clientInfo->y);
+	//CONSOLE_LOG(LOG_LEVEL_DEBUG, L"Move SessionID:%d server_x:%d server_y:%d",
+	//	clientInfo->sessionInfo->sessionID, clientInfo->x, clientInfo->y);
 
 	// 해당 캐릭터 섹터 갱신
 	if(isMove == true)
@@ -1204,19 +1225,22 @@ unordered_map<DWORD, Socket::ClientInfo*>::iterator Socket::RemoveSessionInfo(co
 
 void Socket::HeaderNameInsert()
 {
-	mHeaderNameData.emplace(10, L"HEADER_CS_MOVE_START");
-	mHeaderNameData.emplace(12, L"HEADER_CS_MOVE_STOP");
-	mHeaderNameData.emplace(20, L"HEADER_CS_ATTACK1");
-	mHeaderNameData.emplace(21, L"HEADER_SC_ATTACK1");
-	mHeaderNameData.emplace(22, L"HEADER_CS_ATTACK2");
-	mHeaderNameData.emplace(23, L"HEADER_SC_ATTACK2");
-	mHeaderNameData.emplace(24, L"HEADER_CS_ATTACK3");
-	mHeaderNameData.emplace(25, L"HEADER_SC_ATTACK3");
-	mHeaderNameData.emplace(0, L"HEADER_SC_CREATE_MY_CHARACTER");
-	mHeaderNameData.emplace(1, L"HEADER_SC_CREATE_OTHER_CHARACTER");
-	mHeaderNameData.emplace(2, L"HEADER_SC_DELETE_CHARACTER");
-	mHeaderNameData.emplace(11, L"HEADER_SC_MOVE_START");
-	mHeaderNameData.emplace(13, L"HEADER_SC_MOVE_STOP");
+	mHeaderNameData.emplace(HEADER_CS_MOVE_START, L"HEADER_CS_MOVE_START");
+	mHeaderNameData.emplace(HEADER_CS_MOVE_STOP, L"HEADER_CS_MOVE_STOP");
+	mHeaderNameData.emplace(HEADER_CS_ATTACK1, L"HEADER_CS_ATTACK1");
+	mHeaderNameData.emplace(HEADER_SC_ATTACK1, L"HEADER_SC_ATTACK1");
+	mHeaderNameData.emplace(HEADER_CS_ATTACK2, L"HEADER_CS_ATTACK2");
+	mHeaderNameData.emplace(HEADER_SC_ATTACK2, L"HEADER_SC_ATTACK2");
+	mHeaderNameData.emplace(HEADER_CS_ATTACK3, L"HEADER_CS_ATTACK3");
+	mHeaderNameData.emplace(HEADER_SC_ATTACK3, L"HEADER_SC_ATTACK3");
+	mHeaderNameData.emplace(HEADER_SC_CREATE_MY_CHARACTER, L"HEADER_SC_CREATE_MY_CHARACTER");
+	mHeaderNameData.emplace(HEADER_SC_CREATE_OTHER_CHARACTER, L"HEADER_SC_CREATE_OTHER_CHARACTER");
+	mHeaderNameData.emplace(HEADER_SC_DELETE_CHARACTER, L"HEADER_SC_DELETE_CHARACTER");
+	mHeaderNameData.emplace(HEADER_SC_MOVE_START, L"HEADER_SC_MOVE_START");
+	mHeaderNameData.emplace(HEADER_SC_MOVE_STOP, L"HEADER_SC_MOVE_STOP");
+	mHeaderNameData.emplace(HEADER_SC_SYNC, L"HEADER_SC_SYNC");
+	mHeaderNameData.emplace(HEADER_CS_ECHO, L"HEADER_CS_ECHO");
+	mHeaderNameData.emplace(HEADER_SC_ECHO, L"HEADER_SC_ECHO");
 }
 
 void Socket::AddClientInfo(SessionInfo* sessionInfo)
@@ -1227,8 +1251,8 @@ void Socket::AddClientInfo(SessionInfo* sessionInfo)
 
 	clientInfo->hp = 100;
 	clientInfo->sessionInfo = sessionInfo;
-	clientInfo->x = 50;
-	clientInfo->y = 40;
+	clientInfo->x = 200;
+	clientInfo->y = 200;
 	mClientData.emplace(sessionInfo->sessionID, clientInfo);
 	CreateCharacter_MakePacket(clientInfo);
 	//CreateCharacterOther_MakePacket(clientInfo->sessionInfo);
@@ -1256,8 +1280,8 @@ void Socket::SectorUpdateCharcater(ClientInfo* clientInfo, const bool isCreateCh
 {
 	// 최초 생성 
 	clientInfo->oldSectorPos = clientInfo->curSectorPos;
-	clientInfo->curSectorPos.x = clientInfo->x / mSectorRange.x;
-	clientInfo->curSectorPos.y = clientInfo->y / mSectorRange.y;
+	clientInfo->curSectorPos.x = clientInfo->x / mSectorMaxRange.x;
+	clientInfo->curSectorPos.y = clientInfo->y / mSectorMaxRange.y;
 
 	CONSOLE_LOG(LOG_LEVEL_DEBUG, L"[sesssionID:%d] sectorX:%d sectorY:%d", 
 		clientInfo->sessionInfo->sessionID, clientInfo->curSectorPos.x, clientInfo->curSectorPos.y);

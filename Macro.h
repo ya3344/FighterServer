@@ -29,12 +29,6 @@ inline short CalDistance(const short srcX, const short srcY, const short destX, 
 }
 	
 // Log 
-enum LOG_INDEX
-{
-	LOG_LEVEL_DEBUG		= 0,
-	LOG_LEVEL_WARNING,
-	LOG_LEVEL_ERROR,
-};
 
 //inline void ConsoleLog(const WCHAR* buffer, const int logLevel)
 //{

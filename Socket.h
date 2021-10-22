@@ -87,6 +87,8 @@ private:
 	void CreateOtherCharacter_MakePacket(HeaderInfo* outHeader, PacketBuffer* outPacketBuffer, const ClientInfo* clientInfo);
 	void RemoveCharacter_MakePacket(HeaderInfo* outHeader, PacketBuffer* outPacketBuffer, const ClientInfo* clientInfo);
 	void SyncMakePacket(HeaderInfo* outHeader, PacketBuffer* outPacketBuffer, const ClientInfo* clientInfo);
+	void EchoRequest(const SessionInfo* sessionInfo, PacketBuffer& packetBuffer);
+
 
 private: // 캐릭터 업데이트 처리
 	void CharacterUpdate();
@@ -131,6 +133,6 @@ private: // 프레임 고정 변수
 
 private: // Section 관련 변수
 	list<ClientInfo*> mSectorData[SECTOR_MAX_Y][SECTOR_MAX_X];
-	POINT mSectorRange;
+	POINT mSectorMaxRange;
 };
 

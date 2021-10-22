@@ -283,5 +283,5 @@ struct HeaderInfo
 //	2	-	Y
 //
 //---------------------------------------------------------------
-
-
+#define HEADER_CS_ECHO						252
+#define HEADER_SC_ECHO						253

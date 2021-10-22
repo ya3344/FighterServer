@@ -32,9 +32,6 @@ using namespace std;
 #include <crtdbg.h>
 
 
-#include "Constant.h"
-#include "Macro.h"
-#include "define.h"
 
 #ifdef _DEBUG
 #define new new( _NORMAL_BLOCK, __FILE__, __LINE__ )                                            
@@ -43,5 +40,10 @@ using namespace std;
 // Warning Ignore
 #pragma comment(lib, "imm32.lib")
 #pragma comment(lib, "winmm.lib") 
+
+#include "define.h"
+#include "Constant.h"
+#include "Macro.h"
+
 
 #endif //PCH_H
