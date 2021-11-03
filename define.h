@@ -22,8 +22,9 @@ enum PLAYER_ACTION_INDEX
 
 enum MovePixelIndex
 {
-	MOVE_X_PIXEL = 3,
-	MOVE_Y_PIXEL = 2,
+	// 25fps 기준 이동속도
+	MOVE_X_PIXEL = 6, 
+	MOVE_Y_PIXEL = 4,
 };
 
 enum RANGE_LIMIT_INDEX
@@ -56,4 +57,5 @@ enum LOG_INDEX
 	LOG_LEVEL_DEBUG = 0,
 	LOG_LEVEL_WARNING,
 	LOG_LEVEL_ERROR,
+	LOG_LEVEL_DISPLAY,
 };

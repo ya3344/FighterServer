@@ -37,6 +37,15 @@ bool Socket::Initialize()
 	optval.l_linger = 0;
 	setsockopt(mListenSock, SOL_SOCKET, SO_LINGER, (char*)&optval, sizeof(optval));
 
+
+	// 논블록킹 소켓으로 전환
+	u_long on = 1;
+	if (SOCKET_ERROR == ioctlsocket(mListenSock, FIONBIO, &on))
+	{
+		CONSOLE_LOG(LOG_LEVEL_ERROR, L"ioctlsocket() errcode[%d]", WSAGetLastError());
+		return false;
+	}
+
 	// bind
 	ZeroMemory(&serveraddr, sizeof(serveraddr));
 	serveraddr.sin_family = AF_INET;
@@ -44,7 +53,7 @@ bool Socket::Initialize()
 	serveraddr.sin_port = htons(SERVER_PORT);
 	InetNtop(AF_INET, &serveraddr.sin_addr, serverIP, _countof(serverIP));
 
-	CONSOLE_LOG(LOG_LEVEL_WARNING, L"[CHAT SERVER] SERVER IP: %s SERVER Port:%d", serverIP, ntohs(serveraddr.sin_port));
+	CONSOLE_LOG(LOG_LEVEL_DISPLAY, L"[CHAT SERVER] SERVER IP: %s SERVER Port:%d", serverIP, ntohs(serveraddr.sin_port));
 
 	returnValue = bind(mListenSock, (SOCKADDR*)&serveraddr, sizeof(serveraddr));
 	if (returnValue == SOCKET_ERROR)
@@ -60,15 +69,8 @@ bool Socket::Initialize()
 		CONSOLE_LOG(LOG_LEVEL_ERROR, L"listen error:%d ", WSAGetLastError());
 		return false;
 	}
-	CONSOLE_LOG(LOG_LEVEL_WARNING, L"server open\n");
+	CONSOLE_LOG(LOG_LEVEL_DISPLAY, L"server open\n");
 
-	// 논블록킹 소켓으로 전환
-	u_long on = 1;
-	if (SOCKET_ERROR == ioctlsocket(mListenSock, FIONBIO, &on))
-	{
-		CONSOLE_LOG(LOG_LEVEL_ERROR, L"ioctlsocket() errcode[%d]", WSAGetLastError());
-		return false;
-	}
 
 	// 디버그용 헤더타입 이름 저장
 	HeaderNameInsert();
@@ -87,7 +89,8 @@ bool Socket::ServerProcess()
 	SessionInfo* sessionInfo = nullptr;
 	BYTE socketCount = 0;
 	vector<DWORD> sessionID_Data;
-
+	static DWORD frameCount = 0;
+	static DWORD frameTime = timeGetTime();
 	// userid 는 최대 fdsetsize 만큼 들어가기 때문에 미리 메모리 할당 하여 reallocation 방지
 	sessionID_Data.reserve(FD_SETSIZE);
 
@@ -136,7 +139,13 @@ bool Socket::ServerProcess()
 		}
 		// 64개 미만인 select 실행
 		SelectSocket(read_set, write_set, sessionID_Data);
-
+		++frameCount;
+		if (frameTime + 1000 < timeGetTime())
+		{
+			//CONSOLE_LOG(LOG_LEVEL_DISPLAY, L"Select fps:%d\n", frameCount);
+			frameTime = timeGetTime();
+			frameCount = 0;
+		}
 		// Update 처리
 		Update();
 	}
@@ -150,23 +159,27 @@ void Socket::Update()
 
 	if (mIsFlag)
 	{
-		mOldTime = mCurTime - (mDeltaTime - (20 - (mCurTime - mSkiptime)));
+		mOldTime = mCurTime - (mDeltaTime - (40 - (mCurTime - mSkiptime)));
 		mIsFlag = false;
 	}
 
 	mDeltaTime = mCurTime - mOldTime;
 
-	if (mDeltaTime < 40)
+	if (mDeltaTime < 80)
 	{
-		if (mDeltaTime < 20)
+		if (mDeltaTime < 40)
 		{
-			Sleep(20 - mDeltaTime);
+			//Sleep(20 - mDeltaTime);
 		}
-		//20ms를 초과 X -> Sleep 한 시간만큼 old에 더한다. 
-		//20ms를 초과 O -> 초과한 시간만큼 old에서 뺀다. (그냥 누적하다가 1프레임이 넘으면 스킵) old = cur - (deltaTime - 20);
-		mOldTime = mCurTime - (mDeltaTime - 20);
-		CharacterUpdate();
-		++mFps;
+		else
+		{
+			//20ms를 초과 X -> Sleep 한 시간만큼 old에 더한다. 
+			//20ms를 초과 O -> 초과한 시간만큼 old에서 뺀다. (그냥 누적하다가 1프레임이 넘으면 스킵) old = cur - (deltaTime - 20);
+			mOldTime = mCurTime - (mDeltaTime - 40);
+			CharacterUpdate();
+			++mFps;
+		}
+
 	}
 	else
 	{
@@ -176,7 +189,7 @@ void Socket::Update()
 
 	if (mFpsTime + 1000 < timeGetTime())
 	{
-		//wprintf(L"fps:%d\n", mFps);
+		//CONSOLE_LOG(LOG_LEVEL_DISPLAY, L"Update fps:%d\n", mFps);
 		mFpsTime = timeGetTime();
 		mFps = 0;
 	}
@@ -220,7 +233,7 @@ void Socket::SelectSocket(fd_set& read_set, fd_set& write_set, const vector<DWOR
 
 	// select 즉시 리턴
 	timeout.tv_sec = 0;
-	timeout.tv_sec = 0;
+	timeout.tv_usec = 0;
 
 	fdNum = select(0, &read_set, &write_set, 0, &timeout);
 
@@ -231,7 +244,7 @@ void Socket::SelectSocket(fd_set& read_set, fd_set& write_set, const vector<DWOR
 		CONSOLE_LOG(LOG_LEVEL_ERROR, L"SOCKET_ERROR() errcode[%d]", WSAGetLastError());
 		return;
 	}
-	// 소켓 셋 검사
+	// 소켓 셋 검사X
 	if (FD_ISSET(mListenSock, &read_set))
 	{
 		addrlen = sizeof(clientaddr);
@@ -242,7 +255,7 @@ void Socket::SelectSocket(fd_set& read_set, fd_set& write_set, const vector<DWOR
 			return;
 		}
 		InetNtop(AF_INET, &clientaddr.sin_addr, clientIP, 16);
-		CONSOLE_LOG(LOG_LEVEL_DEBUG, L"[CHAT SERVER] Client IP: %s Clinet Port:%d", clientIP, ntohs(clientaddr.sin_port));
+		CONSOLE_LOG(LOG_LEVEL_DISPLAY, L"[CHAT SERVER] Client IP: %s Clinet Port:%d", clientIP, ntohs(clientaddr.sin_port));
 
 		// 세션 정보 추가
 		AddSessionInfo(clientSock, clientaddr);
@@ -261,7 +274,7 @@ void Socket::SelectSocket(fd_set& read_set, fd_set& write_set, const vector<DWOR
 		_ASSERT(sessionInfo != nullptr);
 		if (FD_ISSET(sessionInfo->clientSock, &read_set))
 		{
-			if (returnVal = recv(sessionInfo->clientSock, sessionInfo->recvRingBuffer->GetBufferPtr(), sessionInfo->recvRingBuffer->GetFreeSize(), 0))
+			if (returnVal = recv(sessionInfo->clientSock, inputData, sessionInfo->recvRingBuffer->GetFreeSize(), 0))
 			{
 				CONSOLE_LOG(LOG_LEVEL_DEBUG, L"sessionID:%d recv packet size:%d", sessionInfo->sessionID, returnVal);
 
@@ -287,7 +300,13 @@ void Socket::SelectSocket(fd_set& read_set, fd_set& write_set, const vector<DWOR
 
 				}
 
-				returnVal = sessionInfo->recvRingBuffer->MoveWritePos(returnVal);
+				/*returnVal = sessionInfo->recvRingBuffer->MoveWritePos(returnVal);
+				if (sessionInfo->recvRingBuffer->GetWriteSize() >= 49)
+				{
+					int a = 0;
+				}*/
+				sessionInfo->recvRingBuffer->Enqueue(inputData, returnVal);
+				CONSOLE_LOG(LOG_LEVEL_DEBUG, L"sessionID:%d write size:%d", sessionInfo->sessionID, sessionInfo->recvRingBuffer->GetWriteSize());
 				if (returnVal == RingBuffer::USE_COUNT_OVER_FLOW)
 				{
 					CONSOLE_LOG(LOG_LEVEL_ERROR, L"recv enqueue USE_COUNT_OVER_FLOW returnVal[%d]", returnVal);
@@ -357,6 +376,7 @@ void Socket::RecvProcess(SessionInfo* sessionInfo)
 	DWORD returnVal = 0;
 	HeaderInfo header;
 	PacketBuffer packetBuffer(PacketBuffer::BUFFER_SIZE_DEFAULT);
+	bool isPacketWritePos = false;
 
 	while (sessionInfo->recvRingBuffer->GetUseSize() >= sizeof(header))
 	{
@@ -387,7 +407,11 @@ void Socket::RecvProcess(SessionInfo* sessionInfo)
 			mHeaderNameData[header.msgType].c_str(),
 			sessionInfo->recvRingBuffer->GetUseSize());
 
-		sessionInfo->recvRingBuffer->MoveReadPos(returnVal);
+		sessionInfo->recvRingBuffer->MoveReadPos(sizeof(header));
+
+		CONSOLE_LOG(LOG_LEVEL_WARNING, L"[sessionID:%d] RingBuf ReadSize:%d",
+			sessionInfo->sessionID,
+			sessionInfo->recvRingBuffer->GetReadSize());
 
 		// 패킷버퍼에 payload 입력
 		packetBuffer.Clear();
@@ -400,12 +424,21 @@ void Socket::RecvProcess(SessionInfo* sessionInfo)
 			return;
 		}
 		// 패킷 버퍼도 버퍼에 직접담은 부분이기 때문에 writepos을 직접 이동시켜준다.
-		packetBuffer.MoveWritePos(returnVal);
+		isPacketWritePos = packetBuffer.MoveWritePos(returnVal);
+		if (isPacketWritePos == false)
+		{
+			CONSOLE_LOG(LOG_LEVEL_ERROR, L"Packet MoveWritePos OverFlow[%d]", returnVal);
+			return;
+		}
 
 		CONSOLE_LOG(LOG_LEVEL_DEBUG, L"payLoadSize:%d RingBuf useSize:%d", 
 			returnVal, sessionInfo->recvRingBuffer->GetUseSize());
 
 		sessionInfo->recvRingBuffer->MoveReadPos(returnVal);
+
+		CONSOLE_LOG(LOG_LEVEL_WARNING, L"[sessionID:%d] RingBuf ReadSize:%d",
+			sessionInfo->sessionID,
+			sessionInfo->recvRingBuffer->GetReadSize());
 
 		PacketProcess(header.msgType, sessionInfo, packetBuffer);
 	}
@@ -458,8 +491,27 @@ void Socket::PacketProcess(const WORD msgType, const SessionInfo* sessionInfo, P
 
 void Socket::SendUnicast(const SessionInfo* sessionInfo, const HeaderInfo* header, const PacketBuffer& packetBuffer)
 {
-	sessionInfo->sendRingBuffer->Enqueue((char*)header, sizeof(HeaderInfo));
-	sessionInfo->sendRingBuffer->Enqueue(packetBuffer.GetBufferPtr(), packetBuffer.GetDataSize());
+	int retVal;
+
+	retVal = sessionInfo->sendRingBuffer->Enqueue((char*)header, sizeof(HeaderInfo));
+	if (retVal < 0)
+	{
+		CONSOLE_LOG(LOG_LEVEL_ERROR, L"[SessionID:%d] Enqueue Error[%d] Send Header Type:%s RingBuf useSize:%d",
+			sessionInfo->sessionID,
+			retVal,
+			mHeaderNameData[header->msgType].c_str(),
+			sessionInfo->sendRingBuffer->GetUseSize());
+	}
+
+	retVal = sessionInfo->sendRingBuffer->Enqueue(packetBuffer.GetBufferPtr(), packetBuffer.GetDataSize());
+	if (retVal < 0)
+	{
+		CONSOLE_LOG(LOG_LEVEL_ERROR, L"[SessionID:%d] Enqueue Error[%d] Send packetBuffer:%s RingBuf useSize:%d",
+			sessionInfo->sessionID,
+			retVal,
+			mHeaderNameData[header->msgType].c_str(),
+			sessionInfo->sendRingBuffer->GetUseSize());
+	}
 
 	CONSOLE_LOG(LOG_LEVEL_WARNING, L"[SessionID:%d] Send Header Type:%s RingBuf useSize:%d",
 		sessionInfo->sessionID,
@@ -639,8 +691,8 @@ void Socket::MoveStopRequest(const SessionInfo* sessionInfo, PacketBuffer& packe
 
 	if (clientInfo->direction != direction)
 	{
-		CONSOLE_LOG(LOG_LEVEL_ERROR, L"direction uncorrect! SessionID:%d / server_dir: %d / client_dir:%d",
-			sessionInfo->sessionID, clientInfo->direction, direction);
+		/*CONSOLE_LOG(LOG_LEVEL_ERROR, L"direction uncorrect! SessionID:%d / server_dir: %d / client_dir:%d",
+			sessionInfo->sessionID, clientInfo->direction, direction);*/
 	//	_ASSERT(false);
 		clientInfo->direction = direction;
 	}
@@ -702,20 +754,21 @@ void Socket::AttackRequest(const SessionInfo* sessionInfo, PacketBuffer& packetB
 
 	if (clientInfo->direction != direction)
 	{
-		CONSOLE_LOG(LOG_LEVEL_ERROR, L"direction uncorrect! SessionID:%d / server_dir: %d / client_dir:%d",
-			sessionInfo->sessionID, clientInfo->direction, direction);
+		/*CONSOLE_LOG(LOG_LEVEL_ERROR, L"direction uncorrect! SessionID:%d / server_dir: %d / client_dir:%d",
+			sessionInfo->sessionID, clientInfo->direction, direction);*/
 		//_ASSERT(false);
 		clientInfo->direction = direction;
 	}
 
 	clientInfo->isMove = false;
-	CONSOLE_LOG(LOG_LEVEL_DEBUG, L"Attack_%d SessionID:%d / dir:%d / x: %d / y:%d",
+	CONSOLE_LOG(LOG_LEVEL_WARNING, L"Attack_%d SessionID:%d / dir:%d / x: %d / y:%d",
 		attackNum, sessionInfo->sessionID, direction, x, y);
 
-	AttackCollision(clientInfo, attackNum);
 	AttackMakePacket(&header, &packetBuffer, clientInfo, attackNum);
 	SendAroundSector_Broadcast(clientInfo->sessionInfo->sessionID, clientInfo->curSectorPos.x, clientInfo->curSectorPos.y,
 		header, packetBuffer);
+	AttackCollision(clientInfo, attackNum);
+
 }
 
 void Socket::AttackMakePacket(HeaderInfo* outHeader, PacketBuffer* outPacketBuffer, const ClientInfo* clientInfo, const BYTE attackNum)
@@ -795,23 +848,23 @@ void Socket::AttackCollision(const ClientInfo* clientInfo, const BYTE attackNum)
 		return;
 	}
 
-	for (ClientInfo* _clientInfo : mSectorData[mySectorY][mySectorX])
+	for (ClientInfo* victim : mSectorData[mySectorY][mySectorX])
 	{
-		if (clientInfo == _clientInfo)
+		if (clientInfo == victim)
 			continue;
 
-		if (CalDistance(clientInfo->x, clientInfo->y, _clientInfo->x, _clientInfo->y) <= ATTACK_RANGE)
+		if (CalDistance(clientInfo->x, clientInfo->y, victim->x, victim->y) <= ATTACK_RANGE)
 		{
-			_clientInfo->hp -= attackDamage;
-			if (_clientInfo->hp <= 0)
-				_clientInfo->hp = 0;
+			victim->hp -= attackDamage;
+			if (victim->hp <= 0)
+				victim->hp = 1;
 
-			CONSOLE_LOG(LOG_LEVEL_DEBUG, L"MySector Damage AttackID:%d VictimID:%d VictimHP:%d",
-				clientInfo->sessionInfo->sessionID, _clientInfo->sessionInfo->sessionID, _clientInfo->hp);
+			CONSOLE_LOG(LOG_LEVEL_WARNING, L"MySector Damage AttackID:%d VictimID:%d VictimHP:%d",
+				clientInfo->sessionInfo->sessionID, victim->sessionInfo->sessionID, victim->hp);
 
 			DamageMakePacket(&header, &packetBuffer, clientInfo->sessionInfo->sessionID, 
-				_clientInfo->sessionInfo->sessionID, _clientInfo->hp);
-			SendAroundSector_Broadcast(_clientInfo->sessionInfo->sessionID, _clientInfo->curSectorPos.x, _clientInfo->curSectorPos.y,
+				victim->sessionInfo->sessionID, victim->hp);
+			SendAroundSector_Broadcast(victim->sessionInfo->sessionID, victim->curSectorPos.x, victim->curSectorPos.y,
 				header, packetBuffer, true);
 			return;
 		}
@@ -819,24 +872,24 @@ void Socket::AttackCollision(const ClientInfo* clientInfo, const BYTE attackNum)
 
 	if (isAttackSection == true)
 	{
-		for (ClientInfo* _clientInfo : mSectorData[mySectorY][attackSectorX])
+		for (ClientInfo* victim : mSectorData[mySectorY][attackSectorX])
 		{
-			if (clientInfo == _clientInfo)
+			if (clientInfo == victim)
 				continue;
 
-			if (CalDistance(clientInfo->x, clientInfo->y, _clientInfo->x, _clientInfo->y) <= ATTACK_RANGE)
+			if (CalDistance(clientInfo->x, clientInfo->y, victim->x, victim->y) <= ATTACK_RANGE)
 			{
-				_clientInfo->hp -= attackDamage;
-				if (_clientInfo->hp <= 0)
-					_clientInfo->hp = 0;
+				victim->hp -= attackDamage;
+				if (victim->hp <= 0)
+					victim->hp = 1;
 
 				DamageMakePacket(&header, &packetBuffer, clientInfo->sessionInfo->sessionID,
-					_clientInfo->sessionInfo->sessionID, _clientInfo->hp);
-				SendAroundSector_Broadcast(_clientInfo->sessionInfo->sessionID, _clientInfo->curSectorPos.x, _clientInfo->curSectorPos.y,
+					victim->sessionInfo->sessionID, victim->hp);
+				SendAroundSector_Broadcast(victim->sessionInfo->sessionID, victim->curSectorPos.x, victim->curSectorPos.y,
 					header, packetBuffer, true);
 
-				CONSOLE_LOG(LOG_LEVEL_DEBUG, L"DirSector Damage AttackID:%d VictimID:%d VictimHP:%d",
-					clientInfo->sessionInfo->sessionID, _clientInfo->sessionInfo->sessionID, _clientInfo->hp);
+				CONSOLE_LOG(LOG_LEVEL_WARNING, L"DirSector Damage AttackID:%d VictimID:%d VictimHP:%d",
+					clientInfo->sessionInfo->sessionID, victim->sessionInfo->sessionID, victim->hp);
 				return;
 			}
 		}
@@ -975,8 +1028,8 @@ void Socket::CharacterUpdate()
 		// 캐릭터 사망 처리 체크
 		if (clientInfo->hp <= 0)
 		{
-			CONSOLE_LOG(LOG_LEVEL_DEBUG, L"[SessionID:%d] Dead", clientInfo->sessionInfo->sessionID);
-			iterClientData = RemoveSessionInfo(clientInfo->sessionInfo->sessionID);
+			/*CONSOLE_LOG(LOG_LEVEL_DEBUG, L"[SessionID:%d] Dead", clientInfo->sessionInfo->sessionID);
+			iterClientData = RemoveSessionInfo(clientInfo->sessionInfo->sessionID);*/
 		}
 		else
 		{
@@ -1095,8 +1148,8 @@ void Socket::ActionProc(ClientInfo* clientInfo)
 		return;
 	}
 
-	//CONSOLE_LOG(LOG_LEVEL_DEBUG, L"Move SessionID:%d server_x:%d server_y:%d",
-	//	clientInfo->sessionInfo->sessionID, clientInfo->x, clientInfo->y);
+	CONSOLE_LOG(LOG_LEVEL_WARNING, L"Move SessionID:%d server_x:%d server_y:%d",
+		clientInfo->sessionInfo->sessionID, clientInfo->x, clientInfo->y);
 
 	// 해당 캐릭터 섹터 갱신
 	if(isMove == true)
@@ -1112,12 +1165,14 @@ bool Socket::MoveCurX(short* outCurX, const bool isLeft)
 
 	if (*outCurX <= RANGE_MOVE_LEFT + MOVE_X_PIXEL)
 	{
-		*outCurX = RANGE_MOVE_LEFT + MOVE_X_PIXEL;
+		//*outCurX = RANGE_MOVE_LEFT;
+		CONSOLE_LOG(LOG_LEVEL_ERROR, L"RANGE_MOVE_LEFT\n");
 		return false;
 	}
 	else if (*outCurX >= RANGE_MOVE_RIGHT - MOVE_X_PIXEL)
 	{
-		*outCurX = RANGE_MOVE_RIGHT - MOVE_X_PIXEL;
+		//*outCurX = RANGE_MOVE_RIGHT;
+		CONSOLE_LOG(LOG_LEVEL_ERROR, L"RANGE_MOVE_RIGHT\n");
 		return false;
 	}
 
@@ -1133,12 +1188,14 @@ bool Socket::MoveCurY(short* outCurY, const bool isUp)
 
 	if (*outCurY < RANGE_MOVE_TOP + MOVE_Y_PIXEL)
 	{
-		*outCurY = RANGE_MOVE_TOP + MOVE_Y_PIXEL;
+		//*outCurY = RANGE_MOVE_TOP;
+		CONSOLE_LOG(LOG_LEVEL_ERROR, L"RANGE_MOVE_TOP\n");
 		return false;
 	}
 	else if (*outCurY > RANGE_MOVE_BOTTOM - MOVE_Y_PIXEL)
 	{
-		*outCurY = RANGE_MOVE_BOTTOM - MOVE_Y_PIXEL;
+		//*outCurY = RANGE_MOVE_BOTTOM;
+		CONSOLE_LOG(LOG_LEVEL_ERROR, L"RANGE_MOVE_BOTTOM\n");
 		return false;
 	}
 
@@ -1155,7 +1212,6 @@ void Socket::AddSessionInfo(const SOCKET clientSock, SOCKADDR_IN& clientAddr)
 	_ASSERT(sessionInfo != nullptr);
 
 	InetNtop(AF_INET, &clientAddr.sin_addr, clientIP, 16);
-	wprintf(L"\n[CHAT SERVER] Client IP: %s Clinet Port:%d\n", clientIP, ntohs(clientAddr.sin_port));
 
 	sessionInfo->clientSock = clientSock;
 	wcscpy_s(sessionInfo->ip, _countof(sessionInfo->ip), clientIP);
@@ -1165,7 +1221,7 @@ void Socket::AddSessionInfo(const SOCKET clientSock, SOCKADDR_IN& clientAddr)
 	sessionInfo->sendRingBuffer = new RingBuffer;
 
 	mSessionData.emplace(sessionInfo->sessionID, sessionInfo);
-	CONSOLE_LOG(LOG_LEVEL_DEBUG, L"[sessionID:%d] session insert size:%d", sessionInfo->sessionID, mSessionData.size());
+	CONSOLE_LOG(LOG_LEVEL_DEBUG, L"[sessionID:%d] session insert size:%d", sessionInfo->sessionID, (int)mSessionData.size());
 	AddClientInfo(sessionInfo);
 }
 
@@ -1219,7 +1275,7 @@ unordered_map<DWORD, Socket::ClientInfo*>::iterator Socket::RemoveSessionInfo(co
 	SafeDelete(iterSessionData->second->sendRingBuffer);
 	SafeDelete(iterSessionData->second);
 	mSessionData.erase(iterSessionData);
-	CONSOLE_LOG(LOG_LEVEL_DEBUG, L"[sessionID:%d] session erase size:%d", sessionID, mSessionData.size());
+	CONSOLE_LOG(LOG_LEVEL_DEBUG, L"[sessionID:%d] session erase size:%d", sessionID, (int)mSessionData.size());
 	return iterClientData;
 }
 
@@ -1249,10 +1305,14 @@ void Socket::AddClientInfo(SessionInfo* sessionInfo)
 	clientInfo = new ClientInfo;
 	_ASSERT(clientInfo != nullptr);
 
+	static random_device rd;
+	static mt19937 mtRand(rd());
+	static uniform_int_distribution<short> range(100, 6300);  // 범위안의 난수발생
+
 	clientInfo->hp = 100;
 	clientInfo->sessionInfo = sessionInfo;
-	clientInfo->x = 200;
-	clientInfo->y = 200;
+	clientInfo->x = range(mtRand);
+	clientInfo->y = range(mtRand);
 	mClientData.emplace(sessionInfo->sessionID, clientInfo);
 	CreateCharacter_MakePacket(clientInfo);
 	//CreateCharacterOther_MakePacket(clientInfo->sessionInfo);
@@ -1289,7 +1349,7 @@ void Socket::SectorUpdateCharcater(ClientInfo* clientInfo, const bool isCreateCh
 	if (clientInfo->curSectorPos.y < 0 || clientInfo->curSectorPos.y >= SECTOR_MAX_Y ||
 		clientInfo->curSectorPos.x < 0 || clientInfo->curSectorPos.x >= SECTOR_MAX_X)
 	{
-		CONSOLE_LOG(LOG_LEVEL_DEBUG, L"[sesssionID:%d] sector Error");
+		CONSOLE_LOG(LOG_LEVEL_DEBUG, L"[sesssionID:%d] sector Error", clientInfo->sessionInfo->sessionID);
 		return;
 	}
 	

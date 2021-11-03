@@ -130,7 +130,6 @@ private: // 프레임 고정 변수
 	DWORD mDeltaTime = mCurTime - mOldTime;
 	int mFps = 0;
 
-
 private: // Section 관련 변수
 	list<ClientInfo*> mSectorData[SECTOR_MAX_Y][SECTOR_MAX_X];
 	POINT mSectorMaxRange;
