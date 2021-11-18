@@ -91,6 +91,8 @@ bool Socket::ServerProcess()
 	vector<DWORD> sessionID_Data;
 	static DWORD frameCount = 0;
 	static DWORD frameTime = timeGetTime();
+	static DWORD oldTickTime = 0;
+	static DWORD tickTime = timeGetTime();
 	// userid 는 최대 fdsetsize 만큼 들어가기 때문에 미리 메모리 할당 하여 reallocation 방지
 	sessionID_Data.reserve(FD_SETSIZE);
 
@@ -142,10 +144,17 @@ bool Socket::ServerProcess()
 		++frameCount;
 		if (frameTime + 1000 < timeGetTime())
 		{
-			//CONSOLE_LOG(LOG_LEVEL_DISPLAY, L"Select fps:%d\n", frameCount);
+			CONSOLE_LOG(LOG_LEVEL_DISPLAY, L"Select fps:%d\n", frameCount);
 			frameTime = timeGetTime();
 			frameCount = 0;
 		}
+
+		if(tickTime - oldTickTime >= 50)
+			CONSOLE_LOG(LOG_LEVEL_DISPLAY, L"tickTime:%d\n", tickTime - oldTickTime);
+
+		oldTickTime = tickTime;
+		tickTime = timeGetTime();
+		
 		// Update 처리
 		Update();
 	}
@@ -352,7 +361,7 @@ void Socket::SendProcess(const SessionInfo* sessionInfo)
 	{
 		if (WSAGetLastError() != WSAEWOULDBLOCK)
 		{
-			CONSOLE_LOG(LOG_LEVEL_ERROR, L"Send() WSAGetLastError [errcode:%d][sessionID:%d]", 
+			CONSOLE_LOG(LOG_LEVEL_ERROR, L"Send() WSAGet                       LastError [errcode:%d][sessionID:%d]", 
 				WSAGetLastError(), sessionInfo->sessionID);
 
 			return;
@@ -662,6 +671,7 @@ void Socket::MoveStopRequest(const SessionInfo* sessionInfo, PacketBuffer& packe
 	packetBuffer >> x;
 	packetBuffer >> y;
 
+
 	clientInfo = FindClientInfo(sessionInfo->sessionID);
 	if (clientInfo == nullptr)
 	{
@@ -689,13 +699,17 @@ void Socket::MoveStopRequest(const SessionInfo* sessionInfo, PacketBuffer& packe
 		//_ASSERT(false);
 	}
 
-	if (clientInfo->direction != direction)
-	{
-		/*CONSOLE_LOG(LOG_LEVEL_ERROR, L"direction uncorrect! SessionID:%d / server_dir: %d / client_dir:%d",
-			sessionInfo->sessionID, clientInfo->direction, direction);*/
-	//	_ASSERT(false);
-		clientInfo->direction = direction;
-	}
+	clientInfo->direction = direction;
+	clientInfo->x = x;
+	clientInfo->y = y;
+
+	//if (clientInfo->direction != direction)
+	//{
+	//	/*CONSOLE_LOG(LOG_LEVEL_ERROR, L"direction uncorrect! SessionID:%d / server_dir: %d / client_dir:%d",
+	//		sessionInfo->sessionID, clientInfo->direction, direction);*/
+	////	_ASSERT(false);
+	//	clientInfo->direction = direction;
+	//}
 	
 	clientInfo->isMove = false;
 
@@ -752,13 +766,17 @@ void Socket::AttackRequest(const SessionInfo* sessionInfo, PacketBuffer& packetB
 		//_ASSERT(false);
 	}
 
-	if (clientInfo->direction != direction)
-	{
-		/*CONSOLE_LOG(LOG_LEVEL_ERROR, L"direction uncorrect! SessionID:%d / server_dir: %d / client_dir:%d",
-			sessionInfo->sessionID, clientInfo->direction, direction);*/
-		//_ASSERT(false);
-		clientInfo->direction = direction;
-	}
+	//if (clientInfo->direction != direction)
+	//{
+	//	/*CONSOLE_LOG(LOG_LEVEL_ERROR, L"direction uncorrect! SessionID:%d / server_dir: %d / client_dir:%d",
+	//		sessionInfo->sessionID, clientInfo->direction, direction);*/
+	//	//_ASSERT(false);
+	//	clientInfo->direction = direction;
+	//}
+
+	clientInfo->direction = direction;
+	clientInfo->x = x;
+	clientInfo->y = y;
 
 	clientInfo->isMove = false;
 	CONSOLE_LOG(LOG_LEVEL_WARNING, L"Attack_%d SessionID:%d / dir:%d / x: %d / y:%d",
@@ -1163,16 +1181,16 @@ bool Socket::MoveCurX(short* outCurX, const bool isLeft)
 	else
 		*outCurX += MOVE_X_PIXEL;
 
-	if (*outCurX <= RANGE_MOVE_LEFT + MOVE_X_PIXEL)
+	if (*outCurX <= RANGE_MOVE_LEFT /*+ MOVE_X_PIXEL*/)
 	{
 		//*outCurX = RANGE_MOVE_LEFT;
-		CONSOLE_LOG(LOG_LEVEL_ERROR, L"RANGE_MOVE_LEFT\n");
+		CONSOLE_LOG(LOG_LEVEL_WARNING, L"RANGE_MOVE_LEFT\n");
 		return false;
 	}
-	else if (*outCurX >= RANGE_MOVE_RIGHT - MOVE_X_PIXEL)
+	else if (*outCurX >= RANGE_MOVE_RIGHT /*- MOVE_X_PIXEL*/)
 	{
 		//*outCurX = RANGE_MOVE_RIGHT;
-		CONSOLE_LOG(LOG_LEVEL_ERROR, L"RANGE_MOVE_RIGHT\n");
+		CONSOLE_LOG(LOG_LEVEL_WARNING, L"RANGE_MOVE_RIGHT\n");
 		return false;
 	}
 
@@ -1186,16 +1204,16 @@ bool Socket::MoveCurY(short* outCurY, const bool isUp)
 	else
 		*outCurY += MOVE_Y_PIXEL;
 
-	if (*outCurY < RANGE_MOVE_TOP + MOVE_Y_PIXEL)
+	if (*outCurY <= RANGE_MOVE_TOP /*+ MOVE_Y_PIXEL*/)
 	{
 		//*outCurY = RANGE_MOVE_TOP;
-		CONSOLE_LOG(LOG_LEVEL_ERROR, L"RANGE_MOVE_TOP\n");
+		CONSOLE_LOG(LOG_LEVEL_WARNING, L"RANGE_MOVE_TOP\n");
 		return false;
 	}
-	else if (*outCurY > RANGE_MOVE_BOTTOM - MOVE_Y_PIXEL)
+	else if (*outCurY >= RANGE_MOVE_BOTTOM /*- MOVE_Y_PIXEL*/)
 	{
 		//*outCurY = RANGE_MOVE_BOTTOM;
-		CONSOLE_LOG(LOG_LEVEL_ERROR, L"RANGE_MOVE_BOTTOM\n");
+		CONSOLE_LOG(LOG_LEVEL_WARNING, L"RANGE_MOVE_BOTTOM\n");
 		return false;
 	}
 
@@ -1311,8 +1329,8 @@ void Socket::AddClientInfo(SessionInfo* sessionInfo)
 
 	clientInfo->hp = 100;
 	clientInfo->sessionInfo = sessionInfo;
-	clientInfo->x = range(mtRand);
-	clientInfo->y = range(mtRand);
+	clientInfo->x = range(mtRand) /*500*/;
+	clientInfo->y = range(mtRand) /*500*/;
 	mClientData.emplace(sessionInfo->sessionID, clientInfo);
 	CreateCharacter_MakePacket(clientInfo);
 	//CreateCharacterOther_MakePacket(clientInfo->sessionInfo);
