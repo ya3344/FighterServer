@@ -3,11 +3,11 @@
 
 class PacketBuffer;
 
-class Socket
+class FightServer
 {
 public:
-	Socket() = default;
-	~Socket();
+	FightServer() = default;
+	~FightServer();
 
 public:
 	enum INFO_INDEX
@@ -16,6 +16,7 @@ public:
 		NAME_BUFFER_SIZE = 15,
 		IP_BUFFER_SIZE = 16,
 		MAX_PACKET_SIZE = 20,
+		SECTOR_DIRECTION_POS = 9,
 	};
 
 	// Sector ฐüทร
@@ -27,7 +28,7 @@ public:
 	struct SectorAroundInfo
 	{
 		int count = 0;
-		SectorPosInfo arround[9];
+		SectorPosInfo arround[SECTOR_DIRECTION_POS];
 	};
 
 	struct SessionInfo

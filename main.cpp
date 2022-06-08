@@ -3,19 +3,19 @@
 
 #include "pch.h"
 #include <iostream>
-#include "Socket.h"
+#include "FightServer.h"
 
-Socket gSocket;
+FightServer gFightServer;
 
 int main()
 {
     _CrtSetDbgFlag(_CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF);
     timeBeginPeriod(1); // 타이머 해상도 높이기
 
-    if (gSocket.Initialize() == false)
+    if (gFightServer.Initialize() == false)
         return EXIT_FAILURE;
 
-    if (gSocket.ServerProcess() == false)
+    if (gFightServer.ServerProcess() == false)
         return EXIT_FAILURE;
 
     timeEndPeriod(1);

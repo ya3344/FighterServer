@@ -1,9 +1,9 @@
 #include "pch.h"
-#include "Socket.h"
+#include "FightServer.h"
 #include "../Common\RingBuffer/RingBuffer.h"
 #include "../Common\PacketBuffer/PacketBuffer.h"
 
-Socket::~Socket()
+FightServer::~FightServer()
 {
 	closesocket(mListenSock);
 	WSACleanup();
@@ -11,7 +11,7 @@ Socket::~Socket()
 	Release();
 }
 
-bool Socket::Initialize()
+bool FightServer::Initialize()
 {
 	WSADATA wsaData;
 	SOCKADDR_IN serveraddr;
@@ -82,7 +82,7 @@ bool Socket::Initialize()
 	return true;
 }
 
-bool Socket::ServerProcess()
+bool FightServer::ServerProcess()
 {
 	fd_set read_set;
 	fd_set write_set;
@@ -162,7 +162,7 @@ bool Socket::ServerProcess()
 	return false;
 }
 
-void Socket::Update()
+void FightServer::Update()
 {
 	mCurTime = timeGetTime();
 
@@ -204,7 +204,7 @@ void Socket::Update()
 	}
 }
 
-void Socket::Release()
+void FightServer::Release()
 {
 	ClientInfo* clientInfo = nullptr;
 	SessionInfo* sessionInfo = nullptr;
@@ -228,7 +228,7 @@ void Socket::Release()
 
 }
 
-void Socket::SelectSocket(fd_set& read_set, fd_set& write_set, const vector<DWORD>& sessionID_Data)
+void FightServer::SelectSocket(fd_set& read_set, fd_set& write_set, const vector<DWORD>& sessionID_Data)
 {
 	TIMEVAL timeout;
 	int fdNum;
@@ -278,7 +278,6 @@ void Socket::SelectSocket(fd_set& read_set, fd_set& write_set, const vector<DWOR
 			CONSOLE_LOG(LOG_LEVEL_ERROR, L"sessionId find error[sessionID:%d]", sessionID);
 			return;
 		}
-
 		sessionInfo = sessionData->second;
 		_ASSERT(sessionInfo != nullptr);
 		if (FD_ISSET(sessionInfo->clientSock, &read_set))
@@ -308,12 +307,6 @@ void Socket::SelectSocket(fd_set& read_set, fd_set& write_set, const vector<DWOR
 					}
 
 				}
-
-				/*returnVal = sessionInfo->recvRingBuffer->MoveWritePos(returnVal);
-				if (sessionInfo->recvRingBuffer->GetWriteSize() >= 49)
-				{
-					int a = 0;
-				}*/
 				sessionInfo->recvRingBuffer->Enqueue(inputData, returnVal);
 				CONSOLE_LOG(LOG_LEVEL_DEBUG, L"sessionID:%d write size:%d", sessionInfo->sessionID, sessionInfo->recvRingBuffer->GetWriteSize());
 				if (returnVal == RingBuffer::USE_COUNT_OVER_FLOW)
@@ -335,7 +328,7 @@ void Socket::SelectSocket(fd_set& read_set, fd_set& write_set, const vector<DWOR
 	}
 }
 
-void Socket::SendProcess(const SessionInfo* sessionInfo)
+void FightServer::SendProcess(const SessionInfo* sessionInfo)
 {
 	int retSize = 0;
 	int retVal = 0;
@@ -361,7 +354,7 @@ void Socket::SendProcess(const SessionInfo* sessionInfo)
 	{
 		if (WSAGetLastError() != WSAEWOULDBLOCK)
 		{
-			CONSOLE_LOG(LOG_LEVEL_ERROR, L"Send() WSAGet                       LastError [errcode:%d][sessionID:%d]", 
+			CONSOLE_LOG(LOG_LEVEL_ERROR, L"Send() WSAGetLastError [errcode:%d][sessionID:%d]", 
 				WSAGetLastError(), sessionInfo->sessionID);
 
 			return;
@@ -379,7 +372,7 @@ void Socket::SendProcess(const SessionInfo* sessionInfo)
 	}
 }
 
-void Socket::RecvProcess(SessionInfo* sessionInfo)
+void FightServer::RecvProcess(SessionInfo* sessionInfo)
 {
 	WORD length = 0;
 	DWORD returnVal = 0;
@@ -453,7 +446,7 @@ void Socket::RecvProcess(SessionInfo* sessionInfo)
 	}
 }
 
-void Socket::PacketProcess(const WORD msgType, const SessionInfo* sessionInfo, PacketBuffer& packetBuffer)
+void FightServer::PacketProcess(const WORD msgType, const SessionInfo* sessionInfo, PacketBuffer& packetBuffer)
 {
 	BYTE direction = 0;
 	short x = 0;
@@ -498,37 +491,7 @@ void Socket::PacketProcess(const WORD msgType, const SessionInfo* sessionInfo, P
 
 }
 
-void Socket::SendUnicast(const SessionInfo* sessionInfo, const HeaderInfo* header, const PacketBuffer& packetBuffer)
-{
-	int retVal;
-
-	retVal = sessionInfo->sendRingBuffer->Enqueue((char*)header, sizeof(HeaderInfo));
-	if (retVal < 0)
-	{
-		CONSOLE_LOG(LOG_LEVEL_ERROR, L"[SessionID:%d] Enqueue Error[%d] Send Header Type:%s RingBuf useSize:%d",
-			sessionInfo->sessionID,
-			retVal,
-			mHeaderNameData[header->msgType].c_str(),
-			sessionInfo->sendRingBuffer->GetUseSize());
-	}
-
-	retVal = sessionInfo->sendRingBuffer->Enqueue(packetBuffer.GetBufferPtr(), packetBuffer.GetDataSize());
-	if (retVal < 0)
-	{
-		CONSOLE_LOG(LOG_LEVEL_ERROR, L"[SessionID:%d] Enqueue Error[%d] Send packetBuffer:%s RingBuf useSize:%d",
-			sessionInfo->sessionID,
-			retVal,
-			mHeaderNameData[header->msgType].c_str(),
-			sessionInfo->sendRingBuffer->GetUseSize());
-	}
-
-	CONSOLE_LOG(LOG_LEVEL_WARNING, L"[SessionID:%d] Send Header Type:%s RingBuf useSize:%d",
-		sessionInfo->sessionID,
-		mHeaderNameData[header->msgType].c_str(),
-		sessionInfo->sendRingBuffer->GetUseSize());
-}
-
-void Socket::SendBroadcast(const SessionInfo* sessionInfo, const HeaderInfo* header, const PacketBuffer& packetBuffer, const bool isSelf)
+void FightServer::SendBroadcast(const SessionInfo* sessionInfo, const HeaderInfo* header, const PacketBuffer& packetBuffer, const bool isSelf)
 {
 	for (auto iterSessionData : mSessionData)
 	{
@@ -541,20 +504,8 @@ void Socket::SendBroadcast(const SessionInfo* sessionInfo, const HeaderInfo* hea
 	}
 }
 
-void Socket::SendSector_Broadcast(const DWORD sessionID, const int sectorX, const int sectorY, const HeaderInfo& header, const PacketBuffer& packetBuffer, const bool isSelf)
-{
-	for (ClientInfo* clientInfo : mSectorData[sectorY][sectorX])
-	{
-		if (isSelf == false)
-		{
-			if (clientInfo->sessionInfo->sessionID == sessionID)
-				continue;
-		}
-		SendUnicast(clientInfo->sessionInfo, &header, packetBuffer);
-	}
-}
 
-void Socket::SendAroundSector_Broadcast(const DWORD sessionID, const int sectorX, const int sectorY, const HeaderInfo& header, const PacketBuffer& packetBuffer, const bool isSelf)
+void FightServer::SendAroundSector_Broadcast(const DWORD sessionID, const int sectorX, const int sectorY, const HeaderInfo& header, const PacketBuffer& packetBuffer, const bool isSelf)
 {
 	SectorAroundInfo mySector;
 
@@ -568,7 +519,51 @@ void Socket::SendAroundSector_Broadcast(const DWORD sessionID, const int sectorX
 
 }
 
-void Socket::MoveStartRequest(const SessionInfo* sessionInfo, PacketBuffer& packetBuffer)
+void FightServer::SendSector_Broadcast(const DWORD sessionID, const int sectorX, const int sectorY, const HeaderInfo& header, const PacketBuffer& packetBuffer, const bool isSelf)
+{
+	for (ClientInfo* clientInfo : mSectorData[sectorY][sectorX])
+	{
+		if (isSelf == false)
+		{
+			if (clientInfo->sessionInfo->sessionID == sessionID)
+				continue;
+		}
+		SendUnicast(clientInfo->sessionInfo, &header, packetBuffer);
+	}
+}
+
+void FightServer::SendUnicast(const SessionInfo* sessionInfo, const HeaderInfo* header, const PacketBuffer& packetBuffer)
+{
+	int retVal;
+
+	retVal = sessionInfo->sendRingBuffer->Enqueue((char*)header, sizeof(HeaderInfo));
+	if (retVal < 0)
+	{
+		CONSOLE_LOG(LOG_LEVEL_ERROR, L"[SessionID:%d] Enqueue Error[%d] Send Header Type:%s RingBuf useSize:%d",
+			sessionInfo->sessionID,
+			retVal,
+			mHeaderNameData[header->msgType].c_str(),
+			sessionInfo->sendRingBuffer->GetUseSize());
+		return;
+	}
+
+	retVal = sessionInfo->sendRingBuffer->Enqueue(packetBuffer.GetBufferPtr(), packetBuffer.GetDataSize());
+	if (retVal < 0)
+	{
+		CONSOLE_LOG(LOG_LEVEL_ERROR, L"[SessionID:%d] Enqueue Error[%d] Send packetBuffer:%s RingBuf useSize:%d",
+			sessionInfo->sessionID,
+			retVal,
+			mHeaderNameData[header->msgType].c_str(),
+			sessionInfo->sendRingBuffer->GetUseSize());
+		return;
+	}
+
+	CONSOLE_LOG(LOG_LEVEL_WARNING, L"[SessionID:%d] Send Header Type:%s RingBuf useSize:%d",
+		sessionInfo->sessionID,
+		mHeaderNameData[header->msgType].c_str(),
+		sessionInfo->sendRingBuffer->GetUseSize());
+}
+void FightServer::MoveStartRequest(const SessionInfo* sessionInfo, PacketBuffer& packetBuffer)
 {
 	BYTE direction;
 	short x;
@@ -602,8 +597,6 @@ void Socket::MoveStartRequest(const SessionInfo* sessionInfo, PacketBuffer& pack
 		SyncMakePacket(&header, &packetBuffer, clientInfo);
 		SendAroundSector_Broadcast(clientInfo->sessionInfo->sessionID, clientInfo->curSectorPos.x, clientInfo->curSectorPos.y,
 			header, packetBuffer);
-		//return;
-		//_ASSERT(false);
 	}
 
 	clientInfo->action = direction;			// 동작 변경
@@ -635,18 +628,13 @@ void Socket::MoveStartRequest(const SessionInfo* sessionInfo, PacketBuffer& pack
 	}
 	clientInfo->isMove = true;
 
-	//SectorUpdateCharcater(clientInfo, false);
-
 	MoveStartMakePacket(&header, &packetBuffer, clientInfo);
 	SendAroundSector_Broadcast(clientInfo->sessionInfo->sessionID, clientInfo->curSectorPos.x, clientInfo->curSectorPos.y,
 		header, packetBuffer);
 
-	/*SendSector_Broadcast(clientInfo->sessionInfo->sessionID, clientInfo->curSectorPos.x, clientInfo->curSectorPos.y,
-		header, packetBuffer);*/
-	//MoveStartMakePacket(clientInfo, packetBuffer);
 }
 
-void Socket::MoveStartMakePacket(HeaderInfo* outHeader, PacketBuffer* outPacketBuffer, const ClientInfo* clientInfo)
+void FightServer::MoveStartMakePacket(HeaderInfo* outHeader, PacketBuffer* outPacketBuffer, const ClientInfo* clientInfo)
 {
 	outPacketBuffer->Clear();
 	*outPacketBuffer << clientInfo->sessionInfo->sessionID;
@@ -659,7 +647,7 @@ void Socket::MoveStartMakePacket(HeaderInfo* outHeader, PacketBuffer* outPacketB
 	outHeader->payLoadSize = outPacketBuffer->GetDataSize();
 }
 
-void Socket::MoveStopRequest(const SessionInfo* sessionInfo, PacketBuffer& packetBuffer)
+void FightServer::MoveStopRequest(const SessionInfo* sessionInfo, PacketBuffer& packetBuffer)
 {
 	BYTE direction;
 	short x;
@@ -718,7 +706,7 @@ void Socket::MoveStopRequest(const SessionInfo* sessionInfo, PacketBuffer& packe
 		header, packetBuffer);
 }
 
-void Socket::MoveStopMakePacket(HeaderInfo* outHeader, PacketBuffer* outPacketBuffer, const ClientInfo* clientInfo)
+void FightServer::MoveStopMakePacket(HeaderInfo* outHeader, PacketBuffer* outPacketBuffer, const ClientInfo* clientInfo)
 {
 	outPacketBuffer->Clear();
 	*outPacketBuffer << clientInfo->sessionInfo->sessionID;
@@ -731,13 +719,13 @@ void Socket::MoveStopMakePacket(HeaderInfo* outHeader, PacketBuffer* outPacketBu
 	outHeader->payLoadSize = outPacketBuffer->GetDataSize();
 }
 
-void Socket::AttackRequest(const SessionInfo* sessionInfo, PacketBuffer& packetBuffer, const BYTE attackNum)
+void FightServer::AttackRequest(const SessionInfo* sessionInfo, PacketBuffer& packetBuffer, const BYTE attackNum)
 {
-	BYTE direction;
-	short x;
-	short y;
+	BYTE direction = ACTION_MOVE_LL;
+	short x = 0;
+	short y = 0;
 	ClientInfo* clientInfo = nullptr;
-	HeaderInfo header;
+	HeaderInfo header = { 0 };
 
 	packetBuffer >> direction;
 	packetBuffer >> x;
@@ -761,24 +749,13 @@ void Socket::AttackRequest(const SessionInfo* sessionInfo, PacketBuffer& packetB
 		SyncMakePacket(&header, &packetBuffer, clientInfo);
 		SendAroundSector_Broadcast(clientInfo->sessionInfo->sessionID, clientInfo->curSectorPos.x, clientInfo->curSectorPos.y,
 			header, packetBuffer);
-		//return;
-
-		//_ASSERT(false);
 	}
-
-	//if (clientInfo->direction != direction)
-	//{
-	//	/*CONSOLE_LOG(LOG_LEVEL_ERROR, L"direction uncorrect! SessionID:%d / server_dir: %d / client_dir:%d",
-	//		sessionInfo->sessionID, clientInfo->direction, direction);*/
-	//	//_ASSERT(false);
-	//	clientInfo->direction = direction;
-	//}
 
 	clientInfo->direction = direction;
 	clientInfo->x = x;
 	clientInfo->y = y;
-
 	clientInfo->isMove = false;
+
 	CONSOLE_LOG(LOG_LEVEL_WARNING, L"Attack_%d SessionID:%d / dir:%d / x: %d / y:%d",
 		attackNum, sessionInfo->sessionID, direction, x, y);
 
@@ -786,10 +763,9 @@ void Socket::AttackRequest(const SessionInfo* sessionInfo, PacketBuffer& packetB
 	SendAroundSector_Broadcast(clientInfo->sessionInfo->sessionID, clientInfo->curSectorPos.x, clientInfo->curSectorPos.y,
 		header, packetBuffer);
 	AttackCollision(clientInfo, attackNum);
-
 }
 
-void Socket::AttackMakePacket(HeaderInfo* outHeader, PacketBuffer* outPacketBuffer, const ClientInfo* clientInfo, const BYTE attackNum)
+void FightServer::AttackMakePacket(HeaderInfo* outHeader, PacketBuffer* outPacketBuffer, const ClientInfo* clientInfo, const BYTE attackNum)
 {
 	outPacketBuffer->Clear();
 	*outPacketBuffer << clientInfo->sessionInfo->sessionID;
@@ -800,14 +776,14 @@ void Socket::AttackMakePacket(HeaderInfo* outHeader, PacketBuffer* outPacketBuff
 	outHeader->code = PACKET_CODE;
 	switch (attackNum)
 	{
-	case 1:
-		outHeader->msgType = HEADER_SC_ATTACK1;
+	case ATTACK_TYPE_FIRST:
+		outHeader->msgType = HEADER_SC_ATTACK_FIRST;
 		break;
-	case 2:
-		outHeader->msgType = HEADER_SC_ATTACK2;
+	case ATTACK_TYPE_SECOND:
+		outHeader->msgType = HEADER_SC_ATTACK_SECOND;
 		break;
-	case 3:
-		outHeader->msgType = HEADER_SC_ATTACK3;
+	case ATTACK_TYPE_THIRD:
+		outHeader->msgType = HEADER_SC_ATTACK_THIRD;
 		break;
 	default:
 		_ASSERT(false);
@@ -817,7 +793,7 @@ void Socket::AttackMakePacket(HeaderInfo* outHeader, PacketBuffer* outPacketBuff
 	outHeader->payLoadSize = outPacketBuffer->GetDataSize();
 }
 
-void Socket::AttackCollision(const ClientInfo* clientInfo, const BYTE attackNum)
+void FightServer::AttackCollision(const ClientInfo* clientInfo, const BYTE attackType)
 {
 	HeaderInfo header;
 	PacketBuffer packetBuffer(PacketBuffer::BUFFER_SIZE_DEFAULT);
@@ -850,16 +826,16 @@ void Socket::AttackCollision(const ClientInfo* clientInfo, const BYTE attackNum)
 		break;
 	}
 
-	switch (attackNum)
+	switch (attackType)
 	{
-	case 1:
-		attackDamage = 1;
+	case ATTACK_TYPE_FIRST:
+		attackDamage = LOW_DAMAGE;
 		break;
-	case 2:
-		attackDamage = 5;
+	case ATTACK_TYPE_SECOND:
+		attackDamage = MID_DAMAGE;
 		break;
-	case 3:
-		attackDamage = 10;
+	case ATTACK_TYPE_THIRD:
+		attackDamage = HIGH_DAMAGE;
 		break;
 	default:
 		_ASSERT(false);
@@ -914,7 +890,7 @@ void Socket::AttackCollision(const ClientInfo* clientInfo, const BYTE attackNum)
 	}
 }
 
-void Socket::DamageMakePacket(HeaderInfo* outHeader, PacketBuffer* outPacketBuffer, const DWORD attackID, const DWORD victimID, const BYTE victimHP)
+void FightServer::DamageMakePacket(HeaderInfo* outHeader, PacketBuffer* outPacketBuffer, const DWORD attackID, const DWORD victimID, const BYTE victimHP)
 {
 	outPacketBuffer->Clear();
 	*outPacketBuffer << attackID;
@@ -926,7 +902,7 @@ void Socket::DamageMakePacket(HeaderInfo* outHeader, PacketBuffer* outPacketBuff
 	outHeader->payLoadSize = outPacketBuffer->GetDataSize();
 }
 
-void Socket::CreateCharacter_MakePacket(const ClientInfo* clientInfo)
+void FightServer::CreateCharacter_MakePacket(const ClientInfo* clientInfo)
 {
 	HeaderInfo header;
 	PacketBuffer packetBuffer(PacketBuffer::BUFFER_SIZE_DEFAULT);
@@ -944,39 +920,7 @@ void Socket::CreateCharacter_MakePacket(const ClientInfo* clientInfo)
 	SendUnicast(clientInfo->sessionInfo, &header, packetBuffer);
 }
 
-//void Socket::CreateCharacterOther_MakePacket(const SessionInfo* sessionInfo)
-//{
-//	HeaderInfo header;
-//	PacketBuffer packetBuffer(PacketBuffer::BUFFER_SIZE_DEFAULT);
-//	ClientInfo* clientInfo = nullptr;
-//
-//	for (auto iterClietData : mClientData)
-//	{
-//		clientInfo = iterClietData.second;
-//
-//		packetBuffer.Clear();
-//		packetBuffer << clientInfo->sessionInfo->sessionID;
-//		packetBuffer << clientInfo->direction;
-//		packetBuffer << clientInfo->x;
-//		packetBuffer << clientInfo->y;
-//		packetBuffer << clientInfo->hp;
-//
-//		header.code = PACKET_CODE;
-//		header.msgType = HEADER_SC_CREATE_OTHER_CHARACTER;
-//		header.payLoadSize = packetBuffer.GetDataSize();
-//
-//		if (sessionInfo->sessionID == clientInfo->sessionInfo->sessionID)
-//		{
-//			SendBroadcast(clientInfo->sessionInfo, &header, packetBuffer);
-//		}
-//		else
-//		{
-//			SendUnicast(sessionInfo, &header, packetBuffer);
-//		}
-//	}
-//}
-
-void Socket::CreateOtherCharacter_MakePacket(HeaderInfo* outHeader, PacketBuffer* outPacketBuffer, const ClientInfo* clientInfo)
+void FightServer::CreateOtherCharacter_MakePacket(HeaderInfo* outHeader, PacketBuffer* outPacketBuffer, const ClientInfo* clientInfo)
 {
 	outPacketBuffer->Clear();
 
@@ -991,7 +935,7 @@ void Socket::CreateOtherCharacter_MakePacket(HeaderInfo* outHeader, PacketBuffer
 	outHeader->payLoadSize = outPacketBuffer->GetDataSize();
 }
 
-void Socket::RemoveCharacter_MakePacket(HeaderInfo* outHeader, PacketBuffer* outPacketBuffer, const ClientInfo* clientInfo)
+void FightServer::RemoveCharacter_MakePacket(HeaderInfo* outHeader, PacketBuffer* outPacketBuffer, const ClientInfo* clientInfo)
 {
 	outPacketBuffer->Clear();
 
@@ -1005,7 +949,7 @@ void Socket::RemoveCharacter_MakePacket(HeaderInfo* outHeader, PacketBuffer* out
 	//SendBroadcast(clientInfo->sessionInfo, &header, packetBuffer, true);
 }
 
-void Socket::SyncMakePacket(HeaderInfo* outHeader, PacketBuffer* outPacketBuffer, const ClientInfo* clientInfo)
+void FightServer::SyncMakePacket(HeaderInfo* outHeader, PacketBuffer* outPacketBuffer, const ClientInfo* clientInfo)
 {
 	outPacketBuffer->Clear();
 	*outPacketBuffer << clientInfo->sessionInfo->sessionID;
@@ -1017,7 +961,7 @@ void Socket::SyncMakePacket(HeaderInfo* outHeader, PacketBuffer* outPacketBuffer
 	outHeader->payLoadSize = outPacketBuffer->GetDataSize();
 }
 
-void Socket::EchoRequest(const SessionInfo* sessionInfo, PacketBuffer& packetBuffer)
+void FightServer::EchoRequest(const SessionInfo* sessionInfo, PacketBuffer& packetBuffer)
 {
 	HeaderInfo header;
 	DWORD time;
@@ -1033,7 +977,7 @@ void Socket::EchoRequest(const SessionInfo* sessionInfo, PacketBuffer& packetBuf
 	SendUnicast(sessionInfo, &header, packetBuffer);
 }
 
-void Socket::CharacterUpdate()
+void FightServer::CharacterUpdate()
 {
 	ClientInfo* clientInfo = nullptr;
 	unordered_map<DWORD, ClientInfo*>::iterator iterClientData;
@@ -1057,7 +1001,7 @@ void Socket::CharacterUpdate()
 	}
 }
 
-void Socket::ActionProc(ClientInfo* clientInfo)
+void FightServer::ActionProc(ClientInfo* clientInfo)
 {
 	// 캐릭터 이동 관련
 	bool isMove = false;
@@ -1174,7 +1118,7 @@ void Socket::ActionProc(ClientInfo* clientInfo)
 		SectorUpdateCharcater(clientInfo, false);
 }
 
-bool Socket::MoveCurX(short* outCurX, const bool isLeft)
+bool FightServer::MoveCurX(short* outCurX, const bool isLeft)
 {
 	if (isLeft == true)
 		*outCurX -= MOVE_X_PIXEL;
@@ -1197,7 +1141,7 @@ bool Socket::MoveCurX(short* outCurX, const bool isLeft)
 	return true;
 }
 
-bool Socket::MoveCurY(short* outCurY, const bool isUp)
+bool FightServer::MoveCurY(short* outCurY, const bool isUp)
 {
 	if (isUp == true)
 		*outCurY -= MOVE_Y_PIXEL;
@@ -1220,7 +1164,7 @@ bool Socket::MoveCurY(short* outCurY, const bool isUp)
 	return true;
 }
 
-void Socket::AddSessionInfo(const SOCKET clientSock, SOCKADDR_IN& clientAddr)
+void FightServer::AddSessionInfo(const SOCKET clientSock, SOCKADDR_IN& clientAddr)
 {
 	WCHAR clientIP[IP_BUFFER_SIZE] = { 0, };
 
@@ -1243,12 +1187,12 @@ void Socket::AddSessionInfo(const SOCKET clientSock, SOCKADDR_IN& clientAddr)
 	AddClientInfo(sessionInfo);
 }
 
-unordered_map<DWORD, Socket::ClientInfo*>::iterator Socket::RemoveSessionInfo(const DWORD sessionID)
+unordered_map<DWORD, FightServer::ClientInfo*>::iterator FightServer::RemoveSessionInfo(const DWORD sessionID)
 {
 	HeaderInfo header;
 	PacketBuffer packetBuffer(PacketBuffer::BUFFER_SIZE_DEFAULT);
 	ClientInfo* clientInfo = nullptr;
-	unordered_map<DWORD, Socket::ClientInfo*>::iterator iterClientData;
+	unordered_map<DWORD, FightServer::ClientInfo*>::iterator iterClientData;
 
 	// 유저 데이터 삭제
 	iterClientData = mClientData.find(sessionID);
@@ -1297,16 +1241,16 @@ unordered_map<DWORD, Socket::ClientInfo*>::iterator Socket::RemoveSessionInfo(co
 	return iterClientData;
 }
 
-void Socket::HeaderNameInsert()
+void FightServer::HeaderNameInsert()
 {
 	mHeaderNameData.emplace(HEADER_CS_MOVE_START, L"HEADER_CS_MOVE_START");
 	mHeaderNameData.emplace(HEADER_CS_MOVE_STOP, L"HEADER_CS_MOVE_STOP");
 	mHeaderNameData.emplace(HEADER_CS_ATTACK1, L"HEADER_CS_ATTACK1");
-	mHeaderNameData.emplace(HEADER_SC_ATTACK1, L"HEADER_SC_ATTACK1");
+	mHeaderNameData.emplace(HEADER_SC_ATTACK_FIRST, L"HEADER_SC_ATTACK1");
 	mHeaderNameData.emplace(HEADER_CS_ATTACK2, L"HEADER_CS_ATTACK2");
-	mHeaderNameData.emplace(HEADER_SC_ATTACK2, L"HEADER_SC_ATTACK2");
+	mHeaderNameData.emplace(HEADER_SC_ATTACK_SECOND, L"HEADER_SC_ATTACK2");
 	mHeaderNameData.emplace(HEADER_CS_ATTACK3, L"HEADER_CS_ATTACK3");
-	mHeaderNameData.emplace(HEADER_SC_ATTACK3, L"HEADER_SC_ATTACK3");
+	mHeaderNameData.emplace(HEADER_SC_ATTACK_THIRD, L"HEADER_SC_ATTACK3");
 	mHeaderNameData.emplace(HEADER_SC_CREATE_MY_CHARACTER, L"HEADER_SC_CREATE_MY_CHARACTER");
 	mHeaderNameData.emplace(HEADER_SC_CREATE_OTHER_CHARACTER, L"HEADER_SC_CREATE_OTHER_CHARACTER");
 	mHeaderNameData.emplace(HEADER_SC_DELETE_CHARACTER, L"HEADER_SC_DELETE_CHARACTER");
@@ -1317,7 +1261,7 @@ void Socket::HeaderNameInsert()
 	mHeaderNameData.emplace(HEADER_SC_ECHO, L"HEADER_SC_ECHO");
 }
 
-void Socket::AddClientInfo(SessionInfo* sessionInfo)
+void FightServer::AddClientInfo(SessionInfo* sessionInfo)
 {
 	ClientInfo* clientInfo = nullptr;
 	clientInfo = new ClientInfo;
@@ -1325,21 +1269,20 @@ void Socket::AddClientInfo(SessionInfo* sessionInfo)
 
 	static random_device rd;
 	static mt19937 mtRand(rd());
-	static uniform_int_distribution<short> range(100, 6300);  // 범위안의 난수발생
+	static uniform_int_distribution<short> range(MIN_RANGE, MAX_RANGE);  // 범위안의 난수발생
 
-	clientInfo->hp = 100;
+	clientInfo->hp = MAX_HP;
 	clientInfo->sessionInfo = sessionInfo;
-	clientInfo->x = range(mtRand) /*500*/;
-	clientInfo->y = range(mtRand) /*500*/;
+	clientInfo->x = range(mtRand);
+	clientInfo->y = range(mtRand);
 	mClientData.emplace(sessionInfo->sessionID, clientInfo);
 	CreateCharacter_MakePacket(clientInfo);
-	//CreateCharacterOther_MakePacket(clientInfo->sessionInfo);
 
 	// 해당 캐릭터 섹터 갱신
 	SectorUpdateCharcater(clientInfo, true);
 }
 
-Socket::ClientInfo* Socket::FindClientInfo(const DWORD sessionID)
+FightServer::ClientInfo* FightServer::FindClientInfo(const DWORD sessionID)
 {
 	ClientInfo* clientInfo = nullptr;
 
@@ -1354,9 +1297,8 @@ Socket::ClientInfo* Socket::FindClientInfo(const DWORD sessionID)
 	return clientInfo;
 }
 
-void Socket::SectorUpdateCharcater(ClientInfo* clientInfo, const bool isCreateCharacter)
+void FightServer::SectorUpdateCharcater(ClientInfo* clientInfo, const bool isCreateCharacter)
 {
-	// 최초 생성 
 	clientInfo->oldSectorPos = clientInfo->curSectorPos;
 	clientInfo->curSectorPos.x = clientInfo->x / mSectorMaxRange.x;
 	clientInfo->curSectorPos.y = clientInfo->y / mSectorMaxRange.y;
@@ -1392,6 +1334,7 @@ void Socket::SectorUpdateCharcater(ClientInfo* clientInfo, const bool isCreateCh
 	mSectorData[clientInfo->curSectorPos.y][clientInfo->curSectorPos.x].emplace_back(clientInfo);
 	CONSOLE_LOG(LOG_LEVEL_DEBUG, L"[sector id:%d] sector insert / sectorX:%d / sectorY:%d", 
 		clientInfo->sessionInfo->sessionID, clientInfo->curSectorPos.x, clientInfo->curSectorPos.y);
+
 	// 이전에 있던 섹터 캐릭터 삭제
 	for (list<ClientInfo*>::iterator iterSectorData = mSectorData[clientInfo->oldSectorPos.y][clientInfo->oldSectorPos.x].begin();
 		iterSectorData != mSectorData[clientInfo->oldSectorPos.y][clientInfo->oldSectorPos.x].end(); iterSectorData++)
@@ -1405,12 +1348,11 @@ void Socket::SectorUpdateCharcater(ClientInfo* clientInfo, const bool isCreateCh
 		}
 	}
 
-	// 섹터가 변경되었기 때문에 추가 및 삭제되 섹터 계산하여 섹터 패킷 전송
+	// 섹터가 변경되었기 때문에 추가 및 삭제된 섹터 계산하여 섹터 패킷 전송
 	SectorUpdatePacket(clientInfo);
-	
 }
 
-void Socket::GetSectorAround(int sectorX, int sectorY, SectorAroundInfo* sectorAround)
+void FightServer::GetSectorAround(int sectorX, int sectorY, SectorAroundInfo* sectorAround)
 {
 	--sectorX;
 	--sectorY;
@@ -1433,7 +1375,7 @@ void Socket::GetSectorAround(int sectorX, int sectorY, SectorAroundInfo* sectorA
 	}
 }
 
-void Socket::GetUpdateSectorAround(ClientInfo* clientInfo, SectorAroundInfo* outRemoveSector, SectorAroundInfo* outAddSector)
+void FightServer::GetUpdateSectorAround(ClientInfo* clientInfo, SectorAroundInfo* outRemoveSector, SectorAroundInfo* outAddSector)
 {
 	bool isFind;
 	SectorAroundInfo oldSector;
@@ -1447,7 +1389,7 @@ void Socket::GetUpdateSectorAround(ClientInfo* clientInfo, SectorAroundInfo* out
 	GetSectorAround(clientInfo->oldSectorPos.x, clientInfo->oldSectorPos.y, &oldSector);
 	GetSectorAround(clientInfo->curSectorPos.x, clientInfo->curSectorPos.y, &curSector);
 
-	// 이전(OldSector) 섹터 정보 중, 신규섹터(AddSector) 에는 없는 정보를 찾아서 RemoveSector에 넣음
+	// 이전(OldSector) 섹터 정보 중, 현재(CurSector) 섹터 에는 없는 정보를 찾아서 RemoveSector에 넣음
 	for (int oldCount = 0; oldCount < oldSector.count; oldCount++)
 	{
 		isFind = false;
@@ -1488,13 +1430,12 @@ void Socket::GetUpdateSectorAround(ClientInfo* clientInfo, SectorAroundInfo* out
 	}
 }
 
-void Socket::SectorUpdatePacket(ClientInfo* clientInfo)
+void FightServer::SectorUpdatePacket(ClientInfo* clientInfo)
 {
 	SectorAroundInfo addSector;
 	SectorAroundInfo removeSector;
 	PacketBuffer packetBuffer(PacketBuffer::BUFFER_SIZE_DEFAULT);
 	HeaderInfo header;
-	list<ClientInfo*>::iterator iterClientInfo;
 
 	GetUpdateSectorAround(clientInfo, &removeSector, &addSector);
 
@@ -1542,7 +1483,6 @@ void Socket::SectorUpdatePacket(ClientInfo* clientInfo)
 		}
 	}
 
-
 	//AddSector에 내자신 캐릭터 움직임 정보 보내기
 	MoveStartMakePacket(&header, &packetBuffer, clientInfo);
 	for (int i = 0; i < addSector.count; i++)
@@ -1568,7 +1508,7 @@ void Socket::SectorUpdatePacket(ClientInfo* clientInfo)
 	}
 }
 
-void Socket::CreateSectorMyAroundPacket(ClientInfo* clientInfo)
+void FightServer::CreateSectorMyAroundPacket(ClientInfo* clientInfo)
 {
 	SectorAroundInfo mySector;
 	PacketBuffer packetBuffer(PacketBuffer::BUFFER_SIZE_DEFAULT);

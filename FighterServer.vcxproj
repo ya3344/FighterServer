@@ -158,14 +158,14 @@
     <ClCompile Include="..\Common\PacketBuffer\PacketBuffer.cpp" />
     <ClCompile Include="..\Common\RingBuffer\RingBuffer.cpp" />
     <ClCompile Include="Constant.cpp" />
-    <ClCompile Include="FighterServer.cpp" />
+    <ClCompile Include="main.cpp" />
     <ClCompile Include="pch.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Create</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Create</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Create</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Create</PrecompiledHeader>
     </ClCompile>
-    <ClCompile Include="Socket.cpp" />
+    <ClCompile Include="FightServer.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\Common\PacketBuffer\PacketBuffer.h" />
@@ -175,7 +175,7 @@
     <ClInclude Include="Macro.h" />
     <ClInclude Include="pch.h" />
     <ClInclude Include="Protocol.h" />
-    <ClInclude Include="Socket.h" />
+    <ClInclude Include="FightServer.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
